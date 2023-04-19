@@ -19,6 +19,7 @@
 #include <linux/percpu.h>
 #include <linux/refcount.h>
 #include <linux/slab.h>
+#include <trace/hooks/gic_v3.h>
 
 #include <linux/irqchip.h>
 #include <linux/irqchip/arm-gic-common.h>
@@ -88,15 +89,6 @@ static DEFINE_STATIC_KEY_TRUE(supports_deactivate_key);
  *   interrupt.
  */
 static DEFINE_STATIC_KEY_FALSE(supports_pseudo_nmis);
-
-/*
- * Global static key controlling whether an update to PMR allowing more
- * interrupts requires to be propagated to the redistributor (DSB SY).
- * And this needs to be exported for modules to be able to enable
- * interrupts...
- */
-DEFINE_STATIC_KEY_FALSE(gic_pmr_sync);
-EXPORT_SYMBOL(gic_pmr_sync);
 
 DEFINE_STATIC_KEY_FALSE(gic_nonsecure_priorities);
 EXPORT_SYMBOL(gic_nonsecure_priorities);
@@ -882,11 +874,15 @@ static void __init gic_dist_init(void)
 	 * enabled.
 	 */
 	affinity = gic_mpidr_to_affinity(cpu_logical_map(smp_processor_id()));
-	for (i = 32; i < GIC_LINE_NR; i++)
+	for (i = 32; i < GIC_LINE_NR; i++) {
+		trace_android_vh_gic_v3_affinity_init(i, GICD_IROUTER, &affinity);
 		gic_write_irouter(affinity, base + GICD_IROUTER + i * 8);
+	}
 
-	for (i = 0; i < GIC_ESPI_NR; i++)
+	for (i = 0; i < GIC_ESPI_NR; i++) {
+		trace_android_vh_gic_v3_affinity_init(i, GICD_IROUTERnE, &affinity);
 		gic_write_irouter(affinity, base + GICD_IROUTERnE + i * 8);
+	}
 }
 
 static int gic_iterate_rdists(int (*fn)(struct redist_region *, void __iomem *))
@@ -1310,9 +1306,7 @@ static void __init gic_smp_init(void)
 				  gic_starting_cpu, NULL);
 
 	/* Register all 8 non-secure SGIs */
-	base_sgi = __irq_domain_alloc_irqs(gic_data.domain, -1, 8,
-					   NUMA_NO_NODE, &sgi_fwspec,
-					   false, NULL);
+	base_sgi = irq_domain_alloc_irqs(gic_data.domain, 8, NUMA_NO_NODE, &sgi_fwspec);
 	if (WARN_ON(base_sgi <= 0))
 		return;
 
@@ -1348,6 +1342,9 @@ static int gic_set_affinity(struct irq_data *d, const struct cpumask *mask_val,
 	reg = gic_dist_base(d) + offset + (index * 8);
 	val = gic_mpidr_to_affinity(cpu_logical_map(cpu));
 
+	trace_android_rvh_gic_v3_set_affinity(d, mask_val, &val, force, gic_dist_base(d),
+					gic_data.redist_regions[0].redist_base,
+					gic_data.redist_stride);
 	gic_write_irouter(val, reg);
 
 	/*
@@ -1768,16 +1765,8 @@ static void gic_enable_nmi_support(void)
 	for (i = 0; i < gic_data.ppi_nr; i++)
 		refcount_set(&ppi_nmi_refs[i], 0);
 
-	/*
-	 * Linux itself doesn't use 1:N distribution, so has no need to
-	 * set PMHE. The only reason to have it set is if EL3 requires it
-	 * (and we can't change it).
-	 */
-	if (gic_read_ctlr() & ICC_CTLR_EL1_PMHE_MASK)
-		static_branch_enable(&gic_pmr_sync);
-
 	pr_info("Pseudo-NMIs enabled using %s ICC_PMR_EL1 synchronisation\n",
-		static_branch_unlikely(&gic_pmr_sync) ? "forced" : "relaxed");
+		gic_has_relaxed_pmr_sync() ? "relaxed" : "forced");
 
 	/*
 	 * How priority values are used by the GIC depends on two things:

@@ -376,8 +376,7 @@ static void pic32_uart_do_tx(struct uart_port *port)
 
 		pic32_uart_writel(sport, PIC32_UART_TX, c);
 
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		port->icount.tx++;
+		uart_xmit_advance(port, 1);
 		if (uart_circ_empty(xmit))
 			break;
 		if (--max_count == 0)
@@ -890,6 +889,8 @@ static int pic32_uart_probe(struct platform_device *pdev)
 	sport->irq_rx		= irq_of_parse_and_map(np, 1);
 	sport->irq_tx		= irq_of_parse_and_map(np, 2);
 	sport->clk		= devm_clk_get(&pdev->dev, NULL);
+	if (IS_ERR(sport->clk))
+		return PTR_ERR(sport->clk);
 	sport->dev		= &pdev->dev;
 
 	/* Hardware flow control: gpios

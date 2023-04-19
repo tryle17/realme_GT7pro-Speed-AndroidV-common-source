@@ -165,7 +165,8 @@ static bool msi_ctrl_valid(struct device *dev, struct msi_ctrl *ctrl)
 	unsigned int hwsize;
 
 	if (WARN_ON_ONCE(ctrl->domid >= MSI_MAX_DEVICE_IRQDOMAINS ||
-			 !dev->msi.data->__domains[ctrl->domid].domain))
+			 (dev->msi.domain &&
+			  !dev->msi.data->__domains[ctrl->domid].domain)))
 		return false;
 
 	hwsize = msi_domain_get_hwsize(dev, ctrl->domid);
@@ -609,8 +610,8 @@ static unsigned int msi_domain_get_hwsize(struct device *dev, unsigned int domid
 		info = domain->host_data;
 		return info->hwsize;
 	}
-	/* No domain, no size... */
-	return 0;
+	/* No domain, default to MSI_XA_DOMAIN_SIZE */
+	return MSI_XA_DOMAIN_SIZE;
 }
 
 static inline void irq_chip_write_msi_msg(struct irq_data *data,
@@ -999,7 +1000,7 @@ bool msi_create_device_irq_domain(struct device *dev, unsigned int domid,
 fail:
 	msi_unlock_descs(dev);
 free_fwnode:
-	kfree(fwnode);
+	irq_domain_free_fwnode(fwnode);
 free_bundle:
 	kfree(bundle);
 	return false;
@@ -1012,6 +1013,7 @@ free_bundle:
  */
 void msi_remove_device_irq_domain(struct device *dev, unsigned int domid)
 {
+	struct fwnode_handle *fwnode = NULL;
 	struct msi_domain_info *info;
 	struct irq_domain *domain;
 
@@ -1024,7 +1026,10 @@ void msi_remove_device_irq_domain(struct device *dev, unsigned int domid)
 
 	dev->msi.data->__domains[domid].domain = NULL;
 	info = domain->host_data;
+	if (irq_domain_is_msi_device(domain))
+		fwnode = domain->fwnode;
 	irq_domain_remove(domain);
+	irq_domain_free_fwnode(fwnode);
 	kfree(container_of(info, struct msi_domain_template, info));
 
 unlock:
@@ -1622,3 +1627,30 @@ struct msi_domain_info *msi_get_domain_info(struct irq_domain *domain)
 {
 	return (struct msi_domain_info *)domain->host_data;
 }
+
+/**
+ * msi_device_has_isolated_msi - True if the device has isolated MSI
+ * @dev: The device to check
+ *
+ * Isolated MSI means that HW modeled by an irq_domain on the path from the
+ * initiating device to the CPU will validate that the MSI message specifies an
+ * interrupt number that the device is authorized to trigger. This must block
+ * devices from triggering interrupts they are not authorized to trigger.
+ * Currently authorization means the MSI vector is one assigned to the device.
+ *
+ * This is interesting for securing VFIO use cases where a rouge MSI (eg created
+ * by abusing a normal PCI MemWr DMA) must not allow the VFIO userspace to
+ * impact outside its security domain, eg userspace triggering interrupts on
+ * kernel drivers, a VM triggering interrupts on the hypervisor, or a VM
+ * triggering interrupts on another VM.
+ */
+bool msi_device_has_isolated_msi(struct device *dev)
+{
+	struct irq_domain *domain = dev_get_msi_domain(dev);
+
+	for (; domain; domain = domain->parent)
+		if (domain->flags & IRQ_DOMAIN_FLAG_ISOLATED_MSI)
+			return true;
+	return arch_is_isolated_msi();
+}
+EXPORT_SYMBOL_GPL(msi_device_has_isolated_msi);

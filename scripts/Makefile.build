@@ -38,11 +38,7 @@ subdir-ccflags-y :=
 
 include $(srctree)/scripts/Kbuild.include
 include $(srctree)/scripts/Makefile.compiler
-
-# The filename Kbuild has precedence over Makefile
-kbuild-dir := $(if $(filter /%,$(src)),$(src),$(srctree)/$(src))
-include $(or $(wildcard $(kbuild-dir)/Kbuild),$(kbuild-dir)/Makefile)
-
+include $(kbuild-file)
 include $(srctree)/scripts/Makefile.lib
 
 # Do not include hostprogs rules unless needed.
@@ -226,6 +222,10 @@ endif
 
 cmd_check_local_export = $(srctree)/scripts/check-local-export $@
 
+ifneq ($(findstring 1, $(KBUILD_EXTRA_WARN)),)
+cmd_warn_shared_object = $(if $(word 2, $(modname-multi)),$(warning $(kbuild-file): $*.o is added to multiple modules: $(modname-multi)))
+endif
+
 define rule_cc_o_c
 	$(call cmd_and_fixdep,cc_o_c)
 	$(call cmd,gen_ksymdeps)
@@ -235,6 +235,7 @@ define rule_cc_o_c
 	$(call cmd,gen_objtooldep)
 	$(call cmd,gen_symversions_c)
 	$(call cmd,record_mcount)
+	$(call cmd,warn_shared_object)
 endef
 
 define rule_as_o_S
@@ -243,6 +244,7 @@ define rule_as_o_S
 	$(call cmd,check_local_export)
 	$(call cmd,gen_objtooldep)
 	$(call cmd,gen_symversions_S)
+	$(call cmd,warn_shared_object)
 endef
 
 # Built-in and composite module parts
@@ -283,11 +285,11 @@ rust_common_cmd = \
 	-Zcrate-attr=no_std \
 	-Zcrate-attr='feature($(rust_allowed_features))' \
 	--extern alloc --extern kernel \
-	--crate-type rlib --out-dir $(obj) -L $(objtree)/rust/ \
-	--crate-name $(basename $(notdir $@))
+	--crate-type rlib -L $(objtree)/rust/ \
+	--crate-name $(basename $(notdir $@)) \
+	--emit=dep-info=$(depfile)
 
 rust_handle_depfile = \
-	mv $(obj)/$(basename $(notdir $@)).d $(depfile); \
 	sed -i '/^\#/d' $(depfile)
 
 # `--emit=obj`, `--emit=asm` and `--emit=llvm-ir` imply a single codegen unit
@@ -300,7 +302,7 @@ rust_handle_depfile = \
 
 quiet_cmd_rustc_o_rs = $(RUSTC_OR_CLIPPY_QUIET) $(quiet_modtag) $@
       cmd_rustc_o_rs = \
-	$(rust_common_cmd) --emit=dep-info,obj $<; \
+	$(rust_common_cmd) --emit=obj=$@ $<; \
 	$(rust_handle_depfile)
 
 $(obj)/%.o: $(src)/%.rs FORCE
@@ -308,7 +310,7 @@ $(obj)/%.o: $(src)/%.rs FORCE
 
 quiet_cmd_rustc_rsi_rs = $(RUSTC_OR_CLIPPY_QUIET) $(quiet_modtag) $@
       cmd_rustc_rsi_rs = \
-	$(rust_common_cmd) --emit=dep-info -Zunpretty=expanded $< >$@; \
+	$(rust_common_cmd) -Zunpretty=expanded $< >$@; \
 	command -v $(RUSTFMT) >/dev/null && $(RUSTFMT) $@; \
 	$(rust_handle_depfile)
 
@@ -317,7 +319,7 @@ $(obj)/%.rsi: $(src)/%.rs FORCE
 
 quiet_cmd_rustc_s_rs = $(RUSTC_OR_CLIPPY_QUIET) $(quiet_modtag) $@
       cmd_rustc_s_rs = \
-	$(rust_common_cmd) --emit=dep-info,asm $<; \
+	$(rust_common_cmd) --emit=asm=$@ $<; \
 	$(rust_handle_depfile)
 
 $(obj)/%.s: $(src)/%.rs FORCE
@@ -325,7 +327,7 @@ $(obj)/%.s: $(src)/%.rs FORCE
 
 quiet_cmd_rustc_ll_rs = $(RUSTC_OR_CLIPPY_QUIET) $(quiet_modtag) $@
       cmd_rustc_ll_rs = \
-	$(rust_common_cmd) --emit=dep-info,llvm-ir $<; \
+	$(rust_common_cmd) --emit=llvm-ir=$@ $<; \
 	$(rust_handle_depfile)
 
 $(obj)/%.ll: $(src)/%.rs FORCE
@@ -433,7 +435,7 @@ $(obj)/built-in.a: $(real-obj-y) FORCE
 # modules.order unless contained modules are updated.
 
 cmd_modules_order = { $(foreach m, $(real-prereqs), \
-	$(if $(filter %/modules.order, $m), cat $m, echo $(patsubst %.o,%.ko,$m));) :; } \
+	$(if $(filter %/modules.order, $m), cat $m, echo $m);) :; } \
 	> $@
 
 $(obj)/modules.order: $(obj-m) FORCE
