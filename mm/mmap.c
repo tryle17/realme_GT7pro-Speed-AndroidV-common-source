@@ -78,7 +78,7 @@ core_param(ignore_rlimit_data, ignore_rlimit_data, bool, 0644);
 static void unmap_region(struct mm_struct *mm, struct maple_tree *mt,
 		struct vm_area_struct *vma, struct vm_area_struct *prev,
 		struct vm_area_struct *next, unsigned long start,
-		unsigned long end);
+		unsigned long end, bool mm_wr_locked);
 
 static pgprot_t vm_pgprot_modify(pgprot_t oldprot, unsigned long vm_flags)
 {
@@ -144,6 +144,24 @@ static void remove_vma(struct vm_area_struct *vma)
 	vm_area_free(vma);
 }
 
+static inline struct vm_area_struct *vma_prev_limit(struct vma_iterator *vmi,
+						    unsigned long min)
+{
+	return mas_prev(&vmi->mas, min);
+}
+
+static inline int vma_iter_clear_gfp(struct vma_iterator *vmi,
+			unsigned long start, unsigned long end, gfp_t gfp)
+{
+	vmi->mas.index = start;
+	vmi->mas.last = end - 1;
+	mas_store_gfp(&vmi->mas, NULL, gfp);
+	if (unlikely(mas_is_err(&vmi->mas)))
+		return -ENOMEM;
+
+	return 0;
+}
+
 /*
  * check_brk_limits() - Use platform specific check of range & verify mlock
  * limits.
@@ -162,10 +180,7 @@ static int check_brk_limits(unsigned long addr, unsigned long len)
 
 	return mlock_future_check(current->mm, current->mm->def_flags, len);
 }
-static int do_brk_munmap(struct ma_state *mas, struct vm_area_struct *vma,
-			 unsigned long newbrk, unsigned long oldbrk,
-			 struct list_head *uf);
-static int do_brk_flags(struct ma_state *mas, struct vm_area_struct *brkvma,
+static int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *brkvma,
 		unsigned long addr, unsigned long request, unsigned long flags);
 SYSCALL_DEFINE1(brk, unsigned long, brk)
 {
@@ -176,7 +191,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	bool populate;
 	bool downgraded = false;
 	LIST_HEAD(uf);
-	MA_STATE(mas, &mm->mm_mt, 0, 0);
+	struct vma_iterator vmi;
 
 	if (mmap_write_lock_killable(mm))
 		return -EINTR;
@@ -218,23 +233,23 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 
 	/*
 	 * Always allow shrinking brk.
-	 * do_brk_munmap() may downgrade mmap_lock to read.
+	 * do_vma_munmap() may downgrade mmap_lock to read.
 	 */
 	if (brk <= mm->brk) {
 		int ret;
 
 		/* Search one past newbrk */
-		mas_set(&mas, newbrk);
-		brkvma = mas_find(&mas, oldbrk);
+		vma_iter_init(&vmi, mm, newbrk);
+		brkvma = vma_find(&vmi, oldbrk);
 		if (!brkvma || brkvma->vm_start >= oldbrk)
 			goto out; /* mapping intersects with an existing non-brk vma. */
 		/*
 		 * mm->brk must be protected by write mmap_lock.
-		 * do_brk_munmap() may downgrade the lock,  so update it
-		 * before calling do_brk_munmap().
+		 * do_vma_munmap() may downgrade the lock,  so update it
+		 * before calling do_vma_munmap().
 		 */
 		mm->brk = brk;
-		ret = do_brk_munmap(&mas, brkvma, newbrk, oldbrk, &uf);
+		ret = do_vma_munmap(&vmi, brkvma, newbrk, oldbrk, &uf, true);
 		if (ret == 1)  {
 			downgraded = true;
 			goto success;
@@ -252,14 +267,14 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	 * Only check if the next VMA is within the stack_guard_gap of the
 	 * expansion area
 	 */
-	mas_set(&mas, oldbrk);
-	next = mas_find(&mas, newbrk - 1 + PAGE_SIZE + stack_guard_gap);
+	vma_iter_init(&vmi, mm, oldbrk);
+	next = vma_find(&vmi, newbrk + PAGE_SIZE + stack_guard_gap);
 	if (next && newbrk + PAGE_SIZE > vm_start_gap(next))
 		goto out;
 
-	brkvma = mas_prev(&mas, mm->start_brk);
+	brkvma = vma_prev_limit(&vmi, mm->start_brk);
 	/* Ok, looks good - let it rip. */
-	if (do_brk_flags(&mas, brkvma, oldbrk, newbrk - oldbrk, 0) < 0)
+	if (do_brk_flags(&vmi, brkvma, oldbrk, newbrk - oldbrk, 0) < 0)
 		goto out;
 
 	mm->brk = brk;
@@ -417,62 +432,12 @@ static void __vma_link_file(struct vm_area_struct *vma,
 	flush_dcache_mmap_unlock(mapping);
 }
 
-/*
- * vma_mas_store() - Store a VMA in the maple tree.
- * @vma: The vm_area_struct
- * @mas: The maple state
- *
- * Efficient way to store a VMA in the maple tree when the @mas has already
- * walked to the correct location.
- *
- * Note: the end address is inclusive in the maple tree.
- */
-void vma_mas_store(struct vm_area_struct *vma, struct ma_state *mas)
-{
-	trace_vma_store(mas->tree, vma);
-	mas_set_range(mas, vma->vm_start, vma->vm_end - 1);
-	mas_store_prealloc(mas, vma);
-}
-
-/*
- * vma_mas_remove() - Remove a VMA from the maple tree.
- * @vma: The vm_area_struct
- * @mas: The maple state
- *
- * Efficient way to remove a VMA from the maple tree when the @mas has already
- * been established and points to the correct location.
- * Note: the end address is inclusive in the maple tree.
- */
-void vma_mas_remove(struct vm_area_struct *vma, struct ma_state *mas)
-{
-	trace_vma_mas_szero(mas->tree, vma->vm_start, vma->vm_end - 1);
-	mas->index = vma->vm_start;
-	mas->last = vma->vm_end - 1;
-	mas_store_prealloc(mas, NULL);
-}
-
-/*
- * vma_mas_szero() - Set a given range to zero.  Used when modifying a
- * vm_area_struct start or end.
- *
- * @mas: The maple tree ma_state
- * @start: The start address to zero
- * @end: The end address to zero.
- */
-static inline void vma_mas_szero(struct ma_state *mas, unsigned long start,
-				unsigned long end)
-{
-	trace_vma_mas_szero(mas->tree, start, end - 1);
-	mas_set_range(mas, start, end - 1);
-	mas_store_prealloc(mas, NULL);
-}
-
 static int vma_link(struct mm_struct *mm, struct vm_area_struct *vma)
 {
-	MA_STATE(mas, &mm->mm_mt, 0, 0);
+	VMA_ITERATOR(vmi, mm, 0);
 	struct address_space *mapping = NULL;
 
-	if (mas_preallocate(&mas, vma, GFP_KERNEL))
+	if (vma_iter_prealloc(&vmi))
 		return -ENOMEM;
 
 	if (vma->vm_file) {
@@ -480,7 +445,7 @@ static int vma_link(struct mm_struct *mm, struct vm_area_struct *vma)
 		i_mmap_lock_write(mapping);
 	}
 
-	vma_mas_store(vma, &mas);
+	vma_iter_store(&vmi, vma);
 
 	if (mapping) {
 		__vma_link_file(vma, mapping);
@@ -493,9 +458,169 @@ static int vma_link(struct mm_struct *mm, struct vm_area_struct *vma)
 }
 
 /*
+ * init_multi_vma_prep() - Initializer for struct vma_prepare
+ * @vp: The vma_prepare struct
+ * @vma: The vma that will be altered once locked
+ * @next: The next vma if it is to be adjusted
+ * @remove: The first vma to be removed
+ * @remove2: The second vma to be removed
+ */
+static inline void init_multi_vma_prep(struct vma_prepare *vp,
+		struct vm_area_struct *vma, struct vm_area_struct *next,
+		struct vm_area_struct *remove, struct vm_area_struct *remove2)
+{
+	memset(vp, 0, sizeof(struct vma_prepare));
+	vp->vma = vma;
+	vp->anon_vma = vma->anon_vma;
+	vp->remove = remove;
+	vp->remove2 = remove2;
+	vp->adj_next = next;
+	if (!vp->anon_vma && next)
+		vp->anon_vma = next->anon_vma;
+
+	vp->file = vma->vm_file;
+	if (vp->file)
+		vp->mapping = vma->vm_file->f_mapping;
+
+}
+
+/*
+ * init_vma_prep() - Initializer wrapper for vma_prepare struct
+ * @vp: The vma_prepare struct
+ * @vma: The vma that will be altered once locked
+ */
+static inline void init_vma_prep(struct vma_prepare *vp,
+				 struct vm_area_struct *vma)
+{
+	init_multi_vma_prep(vp, vma, NULL, NULL, NULL);
+}
+
+
+/*
+ * vma_prepare() - Helper function for handling locking VMAs prior to altering
+ * @vp: The initialized vma_prepare struct
+ */
+static inline void vma_prepare(struct vma_prepare *vp)
+{
+	if (vp->file) {
+		uprobe_munmap(vp->vma, vp->vma->vm_start, vp->vma->vm_end);
+
+		if (vp->adj_next)
+			uprobe_munmap(vp->adj_next, vp->adj_next->vm_start,
+				      vp->adj_next->vm_end);
+
+		i_mmap_lock_write(vp->mapping);
+		if (vp->insert && vp->insert->vm_file) {
+			/*
+			 * Put into interval tree now, so instantiated pages
+			 * are visible to arm/parisc __flush_dcache_page
+			 * throughout; but we cannot insert into address
+			 * space until vma start or end is updated.
+			 */
+			__vma_link_file(vp->insert,
+					vp->insert->vm_file->f_mapping);
+		}
+	}
+
+	if (vp->anon_vma) {
+		anon_vma_lock_write(vp->anon_vma);
+		anon_vma_interval_tree_pre_update_vma(vp->vma);
+		if (vp->adj_next)
+			anon_vma_interval_tree_pre_update_vma(vp->adj_next);
+	}
+
+	if (vp->file) {
+		flush_dcache_mmap_lock(vp->mapping);
+		vma_interval_tree_remove(vp->vma, &vp->mapping->i_mmap);
+		if (vp->adj_next)
+			vma_interval_tree_remove(vp->adj_next,
+						 &vp->mapping->i_mmap);
+	}
+
+}
+
+/*
+ * vma_complete- Helper function for handling the unlocking after altering VMAs,
+ * or for inserting a VMA.
+ *
+ * @vp: The vma_prepare struct
+ * @vmi: The vma iterator
+ * @mm: The mm_struct
+ */
+static inline void vma_complete(struct vma_prepare *vp,
+				struct vma_iterator *vmi, struct mm_struct *mm)
+{
+	if (vp->file) {
+		if (vp->adj_next)
+			vma_interval_tree_insert(vp->adj_next,
+						 &vp->mapping->i_mmap);
+		vma_interval_tree_insert(vp->vma, &vp->mapping->i_mmap);
+		flush_dcache_mmap_unlock(vp->mapping);
+	}
+
+	if (vp->remove && vp->file) {
+		__remove_shared_vm_struct(vp->remove, vp->file, vp->mapping);
+		if (vp->remove2)
+			__remove_shared_vm_struct(vp->remove2, vp->file,
+						  vp->mapping);
+	} else if (vp->insert) {
+		/*
+		 * split_vma has split insert from vma, and needs
+		 * us to insert it before dropping the locks
+		 * (it may either follow vma or precede it).
+		 */
+		vma_iter_store(vmi, vp->insert);
+		mm->map_count++;
+	}
+
+	if (vp->anon_vma) {
+		anon_vma_interval_tree_post_update_vma(vp->vma);
+		if (vp->adj_next)
+			anon_vma_interval_tree_post_update_vma(vp->adj_next);
+		anon_vma_unlock_write(vp->anon_vma);
+	}
+
+	if (vp->file) {
+		i_mmap_unlock_write(vp->mapping);
+		uprobe_mmap(vp->vma);
+
+		if (vp->adj_next)
+			uprobe_mmap(vp->adj_next);
+	}
+
+	if (vp->remove) {
+again:
+		if (vp->file) {
+			uprobe_munmap(vp->remove, vp->remove->vm_start,
+				      vp->remove->vm_end);
+			fput(vp->file);
+		}
+		if (vp->remove->anon_vma)
+			anon_vma_merge(vp->vma, vp->remove);
+		mm->map_count--;
+		mpol_put(vma_policy(vp->remove));
+		if (!vp->remove2)
+			WARN_ON_ONCE(vp->vma->vm_end < vp->remove->vm_end);
+		vm_area_free(vp->remove);
+
+		/*
+		 * In mprotect's case 6 (see comments on vma_merge),
+		 * we must remove the one after next as well.
+		 */
+		if (vp->remove2) {
+			vp->remove = vp->remove2;
+			vp->remove2 = NULL;
+			goto again;
+		}
+	}
+	if (vp->insert && vp->file)
+		uprobe_mmap(vp->insert);
+}
+
+/*
  * vma_expand - Expand an existing VMA
  *
- * @mas: The maple state
+ * @vmi: The vma iterator
  * @vma: The vma to expand
  * @start: The start of the vma
  * @end: The exclusive end of the vma
@@ -509,100 +634,90 @@ static int vma_link(struct mm_struct *mm, struct vm_area_struct *vma)
  *
  * Returns: 0 on success
  */
-inline int vma_expand(struct ma_state *mas, struct vm_area_struct *vma,
-		      unsigned long start, unsigned long end, pgoff_t pgoff,
-		      struct vm_area_struct *next)
+int vma_expand(struct vma_iterator *vmi, struct vm_area_struct *vma,
+	       unsigned long start, unsigned long end, pgoff_t pgoff,
+	       struct vm_area_struct *next)
 {
-	struct mm_struct *mm = vma->vm_mm;
-	struct address_space *mapping = NULL;
-	struct rb_root_cached *root = NULL;
-	struct anon_vma *anon_vma = vma->anon_vma;
-	struct file *file = vma->vm_file;
 	bool remove_next = false;
+	struct vma_prepare vp;
 
 	if (next && (vma != next) && (end == next->vm_end)) {
 		remove_next = true;
 		if (next->anon_vma && !vma->anon_vma) {
 			int error;
 
-			anon_vma = next->anon_vma;
-			vma->anon_vma = anon_vma;
+			vma->anon_vma = next->anon_vma;
 			error = anon_vma_clone(vma, next);
 			if (error)
 				return error;
 		}
 	}
 
+	init_multi_vma_prep(&vp, vma, NULL, remove_next ? next : NULL, NULL);
 	/* Not merging but overwriting any part of next is not handled. */
-	VM_BUG_ON(next && !remove_next && next != vma && end > next->vm_start);
+	VM_WARN_ON(next && !vp.remove &&
+		  next != vma && end > next->vm_start);
 	/* Only handles expanding */
-	VM_BUG_ON(vma->vm_start < start || vma->vm_end > end);
+	VM_WARN_ON(vma->vm_start < start || vma->vm_end > end);
 
-	if (mas_preallocate(mas, vma, GFP_KERNEL))
+	if (vma_iter_prealloc(vmi))
 		goto nomem;
 
 	vma_adjust_trans_huge(vma, start, end, 0);
+	/* VMA iterator points to previous, so set to start if necessary */
+	if (vma_iter_addr(vmi) != start)
+		vma_iter_set(vmi, start);
 
-	if (file) {
-		mapping = file->f_mapping;
-		root = &mapping->i_mmap;
-		uprobe_munmap(vma, vma->vm_start, vma->vm_end);
-		i_mmap_lock_write(mapping);
-	}
-
-	if (anon_vma) {
-		anon_vma_lock_write(anon_vma);
-		anon_vma_interval_tree_pre_update_vma(vma);
-	}
-
-	if (file) {
-		flush_dcache_mmap_lock(mapping);
-		vma_interval_tree_remove(vma, root);
-	}
-
+	vma_prepare(&vp);
 	vma->vm_start = start;
 	vma->vm_end = end;
 	vma->vm_pgoff = pgoff;
 	/* Note: mas must be pointing to the expanding VMA */
-	vma_mas_store(vma, mas);
+	vma_iter_store(vmi, vma);
 
-	if (file) {
-		vma_interval_tree_insert(vma, root);
-		flush_dcache_mmap_unlock(mapping);
-	}
-
-	/* Expanding over the next vma */
-	if (remove_next && file) {
-		__remove_shared_vm_struct(next, file, mapping);
-	}
-
-	if (anon_vma) {
-		anon_vma_interval_tree_post_update_vma(vma);
-		anon_vma_unlock_write(anon_vma);
-	}
-
-	if (file) {
-		i_mmap_unlock_write(mapping);
-		uprobe_mmap(vma);
-	}
-
-	if (remove_next) {
-		if (file) {
-			uprobe_munmap(next, next->vm_start, next->vm_end);
-			fput(file);
-		}
-		if (next->anon_vma)
-			anon_vma_merge(vma, next);
-		mm->map_count--;
-		mpol_put(vma_policy(next));
-		vm_area_free(next);
-	}
-
-	validate_mm(mm);
+	vma_complete(&vp, vmi, vma->vm_mm);
+	validate_mm(vma->vm_mm);
 	return 0;
 
 nomem:
 	return -ENOMEM;
+}
+
+/*
+ * vma_shrink() - Reduce an existing VMAs memory area
+ * @vmi: The vma iterator
+ * @vma: The VMA to modify
+ * @start: The new start
+ * @end: The new end
+ *
+ * Returns: 0 on success, -ENOMEM otherwise
+ */
+int vma_shrink(struct vma_iterator *vmi, struct vm_area_struct *vma,
+	       unsigned long start, unsigned long end, pgoff_t pgoff)
+{
+	struct vma_prepare vp;
+
+	WARN_ON((vma->vm_start != start) && (vma->vm_end != end));
+
+	if (vma_iter_prealloc(vmi))
+		return -ENOMEM;
+
+	init_vma_prep(&vp, vma);
+	vma_adjust_trans_huge(vma, start, end, 0);
+	vma_prepare(&vp);
+
+	if (vma->vm_start < start)
+		vma_iter_clear(vmi, vma->vm_start, start);
+
+	if (vma->vm_end > end)
+		vma_iter_clear(vmi, end, vma->vm_end);
+
+	vma->vm_start = start;
+	vma->vm_end = end;
+	vma->vm_pgoff = pgoff;
+	vma_complete(&vp, vmi, vma->vm_mm);
+	validate_mm(vma->vm_mm);
+	return 0;
 }
 
 /*
@@ -612,25 +727,22 @@ nomem:
  * are necessary.  The "insert" vma (if any) is to be inserted
  * before we drop the necessary locks.
  */
-int __vma_adjust(struct vm_area_struct *vma, unsigned long start,
-	unsigned long end, pgoff_t pgoff, struct vm_area_struct *insert,
+int __vma_adjust(struct vma_iterator *vmi, struct vm_area_struct *vma,
+	unsigned long start, unsigned long end, pgoff_t pgoff,
 	struct vm_area_struct *expand)
 {
 	struct mm_struct *mm = vma->vm_mm;
-	struct vm_area_struct *next_next = NULL;	/* uninit var warning */
+	struct vm_area_struct *remove2 = NULL;
+	struct vm_area_struct *remove = NULL;
 	struct vm_area_struct *next = find_vma(mm, vma->vm_end);
 	struct vm_area_struct *orig_vma = vma;
-	struct address_space *mapping = NULL;
-	struct rb_root_cached *root = NULL;
-	struct anon_vma *anon_vma = NULL;
 	struct file *file = vma->vm_file;
 	bool vma_changed = false;
 	long adjust_next = 0;
-	int remove_next = 0;
-	MA_STATE(mas, &mm->mm_mt, 0, 0);
 	struct vm_area_struct *exporter = NULL, *importer = NULL;
+	struct vma_prepare vma_prep;
 
-	if (next && !insert) {
+	if (next) {
 		if (end >= next->vm_end) {
 			/*
 			 * vma expands, overlapping all the next, and
@@ -645,25 +757,24 @@ int __vma_adjust(struct vm_area_struct *vma, unsigned long start,
 				 */
 				VM_WARN_ON(end != next->vm_end);
 				/*
-				 * remove_next == 3 means we're
-				 * removing "vma" and that to do so we
+				 * we're removing "vma" and that to do so we
 				 * swapped "vma" and "next".
 				 */
-				remove_next = 3;
 				VM_WARN_ON(file != next->vm_file);
 				swap(vma, next);
+				remove = next;
 			} else {
 				VM_WARN_ON(expand != vma);
 				/*
-				 * case 1, 6, 7, remove_next == 2 is case 6,
-				 * remove_next == 1 is case 1 or 7.
+				 * case 1, 6, 7, remove next.
+				 * case 6 also removes the one beyond next
 				 */
-				remove_next = 1 + (end > next->vm_end);
-				if (remove_next == 2)
-					next_next = find_vma(mm, next->vm_end);
+				remove = next;
+				if (end > next->vm_end)
+					remove2 = find_vma(mm, next->vm_end);
 
-				VM_WARN_ON(remove_next == 2 &&
-					   end != next_next->vm_end);
+				VM_WARN_ON(remove2 != NULL &&
+					   end != remove2->vm_end);
 			}
 
 			exporter = next;
@@ -673,8 +784,8 @@ int __vma_adjust(struct vm_area_struct *vma, unsigned long start,
 			 * If next doesn't have anon_vma, import from vma after
 			 * next, if the vma overlaps with it.
 			 */
-			if (remove_next == 2 && !next->anon_vma)
-				exporter = next_next;
+			if (remove2 != NULL && !next->anon_vma)
+				exporter = remove2;
 
 		} else if (end > next->vm_start) {
 			/*
@@ -712,148 +823,39 @@ int __vma_adjust(struct vm_area_struct *vma, unsigned long start,
 		}
 	}
 
-	if (mas_preallocate(&mas, vma, GFP_KERNEL))
+	if (vma_iter_prealloc(vmi))
 		return -ENOMEM;
 
 	vma_adjust_trans_huge(orig_vma, start, end, adjust_next);
-	if (file) {
-		mapping = file->f_mapping;
-		root = &mapping->i_mmap;
-		uprobe_munmap(vma, vma->vm_start, vma->vm_end);
 
-		if (adjust_next)
-			uprobe_munmap(next, next->vm_start, next->vm_end);
+	init_multi_vma_prep(&vma_prep, vma, adjust_next ? next : NULL, remove,
+			    remove2);
+	VM_WARN_ON(vma_prep.anon_vma && adjust_next && next->anon_vma &&
+		   vma_prep.anon_vma != next->anon_vma);
 
-		i_mmap_lock_write(mapping);
-		if (insert && insert->vm_file) {
-			/*
-			 * Put into interval tree now, so instantiated pages
-			 * are visible to arm/parisc __flush_dcache_page
-			 * throughout; but we cannot insert into address
-			 * space until vma start or end is updated.
-			 */
-			__vma_link_file(insert, insert->vm_file->f_mapping);
-		}
-	}
+	vma_prepare(&vma_prep);
 
-	anon_vma = vma->anon_vma;
-	if (!anon_vma && adjust_next)
-		anon_vma = next->anon_vma;
-	if (anon_vma) {
-		VM_WARN_ON(adjust_next && next->anon_vma &&
-			   anon_vma != next->anon_vma);
-		anon_vma_lock_write(anon_vma);
-		anon_vma_interval_tree_pre_update_vma(vma);
-		if (adjust_next)
-			anon_vma_interval_tree_pre_update_vma(next);
-	}
+	if (start < vma->vm_start || end > vma->vm_end)
+		vma_changed = true;
 
-	if (file) {
-		flush_dcache_mmap_lock(mapping);
-		vma_interval_tree_remove(vma, root);
-		if (adjust_next)
-			vma_interval_tree_remove(next, root);
-	}
-
-	if (start != vma->vm_start) {
-		if ((vma->vm_start < start) &&
-		    (!insert || (insert->vm_end != start))) {
-			vma_mas_szero(&mas, vma->vm_start, start);
-			VM_WARN_ON(insert && insert->vm_start > vma->vm_start);
-		} else {
-			vma_changed = true;
-		}
-		vma->vm_start = start;
-	}
-	if (end != vma->vm_end) {
-		if (vma->vm_end > end) {
-			if (!insert || (insert->vm_start != end)) {
-				vma_mas_szero(&mas, end, vma->vm_end);
-				mas_reset(&mas);
-				VM_WARN_ON(insert &&
-					   insert->vm_end < vma->vm_end);
-			}
-		} else {
-			vma_changed = true;
-		}
-		vma->vm_end = end;
-	}
+	vma->vm_start = start;
+	vma->vm_end = end;
+	vma->vm_pgoff = pgoff;
 
 	if (vma_changed)
-		vma_mas_store(vma, &mas);
+		vma_iter_store(vmi, vma);
 
-	vma->vm_pgoff = pgoff;
 	if (adjust_next) {
 		next->vm_start += adjust_next;
 		next->vm_pgoff += adjust_next >> PAGE_SHIFT;
-		vma_mas_store(next, &mas);
-	}
-
-	if (file) {
-		if (adjust_next)
-			vma_interval_tree_insert(next, root);
-		vma_interval_tree_insert(vma, root);
-		flush_dcache_mmap_unlock(mapping);
-	}
-
-	if (remove_next && file) {
-		__remove_shared_vm_struct(next, file, mapping);
-		if (remove_next == 2)
-			__remove_shared_vm_struct(next_next, file, mapping);
-	} else if (insert) {
-		/*
-		 * split_vma has split insert from vma, and needs
-		 * us to insert it before dropping the locks
-		 * (it may either follow vma or precede it).
-		 */
-		mas_reset(&mas);
-		vma_mas_store(insert, &mas);
-		mm->map_count++;
-	}
-
-	if (anon_vma) {
-		anon_vma_interval_tree_post_update_vma(vma);
-		if (adjust_next)
-			anon_vma_interval_tree_post_update_vma(next);
-		anon_vma_unlock_write(anon_vma);
-	}
-
-	if (file) {
-		i_mmap_unlock_write(mapping);
-		uprobe_mmap(vma);
-
-		if (adjust_next)
-			uprobe_mmap(next);
-	}
-
-	if (remove_next) {
-again:
-		if (file) {
-			uprobe_munmap(next, next->vm_start, next->vm_end);
-			fput(file);
-		}
-		if (next->anon_vma)
-			anon_vma_merge(vma, next);
-		mm->map_count--;
-		mpol_put(vma_policy(next));
-		if (remove_next != 2)
-			BUG_ON(vma->vm_end < next->vm_end);
-		vm_area_free(next);
-
-		/*
-		 * In mprotect's case 6 (see comments on vma_merge),
-		 * we must remove next_next too.
-		 */
-		if (remove_next == 2) {
-			remove_next = 1;
-			next = next_next;
-			goto again;
+		if (adjust_next < 0) {
+			WARN_ON_ONCE(vma_changed);
+			vma_iter_store(vmi, next);
 		}
 	}
-	if (insert && file)
-		uprobe_mmap(insert);
 
-	mas_destroy(&mas);
+	vma_complete(&vma_prep, vmi, mm);
+	vma_iter_free(vmi);
 	validate_mm(mm);
 
 	return 0;
@@ -864,9 +866,9 @@ again:
  * per-vma resources, so we don't attempt to merge those.
  */
 static inline int is_mergeable_vma(struct vm_area_struct *vma,
-				struct file *file, unsigned long vm_flags,
-				struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
-				struct anon_vma_name *anon_name)
+				   struct file *file, unsigned long vm_flags,
+				   struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
+				   struct anon_vma_name *anon_name)
 {
 	/*
 	 * VM_SOFTDIRTY should not prevent from VMA merging, if we
@@ -996,7 +998,7 @@ can_vma_merge_after(struct vm_area_struct *vma, unsigned long vm_flags,
  * parameter) may establish ptes with the wrong permissions of NNNN
  * instead of the right permissions of XXXX.
  */
-struct vm_area_struct *vma_merge(struct mm_struct *mm,
+struct vm_area_struct *vma_merge(struct vma_iterator *vmi, struct mm_struct *mm,
 			struct vm_area_struct *prev, unsigned long addr,
 			unsigned long end, unsigned long vm_flags,
 			struct anon_vma *anon_vma, struct file *file,
@@ -1005,7 +1007,7 @@ struct vm_area_struct *vma_merge(struct mm_struct *mm,
 			struct anon_vma_name *anon_name)
 {
 	pgoff_t pglen = (end - addr) >> PAGE_SHIFT;
-	struct vm_area_struct *mid, *next, *res;
+	struct vm_area_struct *mid, *next, *res = NULL;
 	int err = -1;
 	bool merge_prev = false;
 	bool merge_next = false;
@@ -1047,21 +1049,20 @@ struct vm_area_struct *vma_merge(struct mm_struct *mm,
 	if (merge_prev && merge_next &&
 			is_mergeable_anon_vma(prev->anon_vma,
 				next->anon_vma, NULL)) {	 /* cases 1, 6 */
-		err = __vma_adjust(prev, prev->vm_start,
-					next->vm_end, prev->vm_pgoff, NULL,
-					prev);
+		err = __vma_adjust(vmi, prev, prev->vm_start,
+					next->vm_end, prev->vm_pgoff, prev);
 		res = prev;
 	} else if (merge_prev) {			/* cases 2, 5, 7 */
-		err = __vma_adjust(prev, prev->vm_start,
-					end, prev->vm_pgoff, NULL, prev);
+		err = __vma_adjust(vmi, prev, prev->vm_start,
+					end, prev->vm_pgoff, prev);
 		res = prev;
 	} else if (merge_next) {
 		if (prev && addr < prev->vm_end)	/* case 4 */
-			err = __vma_adjust(prev, prev->vm_start,
-					addr, prev->vm_pgoff, NULL, next);
+			err = __vma_adjust(vmi, prev, prev->vm_start,
+					addr, prev->vm_pgoff, next);
 		else					/* cases 3, 8 */
-			err = __vma_adjust(mid, addr, next->vm_end,
-					next->vm_pgoff - pglen, NULL, next);
+			err = __vma_adjust(vmi, mid, addr, next->vm_end,
+					next->vm_pgoff - pglen, next);
 		res = next;
 	}
 
@@ -1071,6 +1072,10 @@ struct vm_area_struct *vma_merge(struct mm_struct *mm,
 	if (err)
 		return NULL;
 	khugepaged_enter_vma(res, vm_flags);
+
+	if (res)
+		vma_iter_set(vmi, end);
+
 	return res;
 }
 
@@ -1524,6 +1529,10 @@ int vma_wants_writenotify(struct vm_area_struct *vma, pgprot_t vm_page_prot)
 	if (vma_soft_dirty_enabled(vma) && !is_vm_hugetlb_page(vma))
 		return 1;
 
+	/* Do we need write faults for uffd-wp tracking? */
+	if (userfaultfd_wp(vma))
+		return 1;
+
 	/* Specialty mapping? */
 	if (vm_flags & VM_PFNMAP)
 		return 0;
@@ -1554,8 +1563,8 @@ static inline int accountable_mapping(struct file *file, vm_flags_t vm_flags)
  * the correct alignment and offset, all from @info. Note: current->mm is used
  * for the search.
  *
- * @info: The unmapped area information including the range (low_limit -
- * hight_limit), the alignment offset and mask.
+ * @info: The unmapped area information including the range [low_limit -
+ * high_limit), the alignment offset and mask.
  *
  * Return: A memory address or -ENOMEM.
  */
@@ -1581,11 +1590,11 @@ static unsigned long unmapped_area(struct vm_unmapped_area_info *info)
 
 /**
  * unmapped_area_topdown() - Find an area between the low_limit and the
- * high_limit with * the correct alignment and offset at the highest available
+ * high_limit with the correct alignment and offset at the highest available
  * address, all from @info. Note: current->mm is used for the search.
  *
- * @info: The unmapped area information including the range (low_limit -
- * hight_limit), the alignment offset and mask.
+ * @info: The unmapped area information including the range [low_limit -
+ * high_limit), the alignment offset and mask.
  *
  * Return: A memory address or -ENOMEM.
  */
@@ -1935,7 +1944,7 @@ int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 		/* Check that both stack segments have the same anon_vma? */
 	}
 
-	if (mas_preallocate(&mas, vma, GFP_KERNEL))
+	if (mas_preallocate(&mas, GFP_KERNEL))
 		return -ENOMEM;
 
 	/* We must make sure the anon_vma is allocated. */
@@ -1978,7 +1987,8 @@ int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 				anon_vma_interval_tree_pre_update_vma(vma);
 				vma->vm_end = address;
 				/* Overwrite old entry in mtree. */
-				vma_mas_store(vma, &mas);
+				mas_set_range(&mas, vma->vm_start, address - 1);
+				mas_store_prealloc(&mas, vma);
 				anon_vma_interval_tree_post_update_vma(vma);
 				spin_unlock(&mm->page_table_lock);
 
@@ -2016,7 +2026,7 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 			return -ENOMEM;
 	}
 
-	if (mas_preallocate(&mas, vma, GFP_KERNEL))
+	if (mas_preallocate(&mas, GFP_KERNEL))
 		return -ENOMEM;
 
 	/* We must make sure the anon_vma is allocated. */
@@ -2060,7 +2070,8 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 				vma->vm_start = address;
 				vma->vm_pgoff -= grow;
 				/* Overwrite old entry in mtree. */
-				vma_mas_store(vma, &mas);
+				mas_set_range(&mas, address, vma->vm_end - 1);
+				mas_store_prealloc(&mas, vma);
 				anon_vma_interval_tree_post_update_vma(vma);
 				spin_unlock(&mm->page_table_lock);
 
@@ -2175,14 +2186,14 @@ static inline void remove_mt(struct mm_struct *mm, struct ma_state *mas)
 static void unmap_region(struct mm_struct *mm, struct maple_tree *mt,
 		struct vm_area_struct *vma, struct vm_area_struct *prev,
 		struct vm_area_struct *next,
-		unsigned long start, unsigned long end)
+		unsigned long start, unsigned long end, bool mm_wr_locked)
 {
 	struct mmu_gather tlb;
 
 	lru_add_drain();
 	tlb_gather_mmu(&tlb, mm);
 	update_hiwater_rss(mm);
-	unmap_vmas(&tlb, mt, vma, start, end);
+	unmap_vmas(&tlb, mt, vma, start, end, mm_wr_locked);
 	free_pgtables(&tlb, mt, vma, prev ? prev->vm_end : FIRST_USER_ADDRESS,
 				 next ? next->vm_start : USER_PGTABLES_CEILING);
 	tlb_finish_mmu(&tlb);
@@ -2191,13 +2202,19 @@ static void unmap_region(struct mm_struct *mm, struct maple_tree *mt,
 /*
  * __split_vma() bypasses sysctl_max_map_count checking.  We use this where it
  * has already been checked or doesn't make sense to fail.
+ * VMA Iterator will point to the end VMA.
  */
-int __split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
+int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		unsigned long addr, int new_below)
 {
+	struct vma_prepare vp;
 	struct vm_area_struct *new;
 	int err;
-	validate_mm_mt(mm);
+
+	validate_mm_mt(vma->vm_mm);
+
+	WARN_ON(vma->vm_start >= addr);
+	WARN_ON(vma->vm_end <= addr);
 
 	if (vma->vm_ops && vma->vm_ops->may_split) {
 		err = vma->vm_ops->may_split(vma, addr);
@@ -2209,16 +2226,20 @@ int __split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
 	if (!new)
 		return -ENOMEM;
 
-	if (new_below)
+	err = -ENOMEM;
+	if (vma_iter_prealloc(vmi))
+		goto out_free_vma;
+
+	if (new_below) {
 		new->vm_end = addr;
-	else {
+	} else {
 		new->vm_start = addr;
 		new->vm_pgoff += ((addr - vma->vm_start) >> PAGE_SHIFT);
 	}
 
 	err = vma_dup_policy(vma, new);
 	if (err)
-		goto out_free_vma;
+		goto out_free_vmi;
 
 	err = anon_vma_clone(new, vma);
 	if (err)
@@ -2230,30 +2251,34 @@ int __split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
 	if (new->vm_ops && new->vm_ops->open)
 		new->vm_ops->open(new);
 
-	if (new_below)
-		err = vma_adjust(vma, addr, vma->vm_end, vma->vm_pgoff +
-			((addr - new->vm_start) >> PAGE_SHIFT), new);
-	else
-		err = vma_adjust(vma, vma->vm_start, addr, vma->vm_pgoff, new);
+	vma_adjust_trans_huge(vma, vma->vm_start, addr, 0);
+	init_vma_prep(&vp, vma);
+	vp.insert = new;
+	vma_prepare(&vp);
+
+	if (new_below) {
+		vma->vm_start = addr;
+		vma->vm_pgoff += (addr - new->vm_start) >> PAGE_SHIFT;
+	} else {
+		vma->vm_end = addr;
+	}
+
+	/* vma_complete stores the new vma */
+	vma_complete(&vp, vmi, vma->vm_mm);
 
 	/* Success. */
-	if (!err)
-		return 0;
+	if (new_below)
+		vma_next(vmi);
+	validate_mm_mt(vma->vm_mm);
+	return 0;
 
-	/* Avoid vm accounting in close() operation */
-	new->vm_start = new->vm_end;
-	new->vm_pgoff = 0;
-	/* Clean everything up if vma_adjust failed. */
-	if (new->vm_ops && new->vm_ops->close)
-		new->vm_ops->close(new);
-	if (new->vm_file)
-		fput(new->vm_file);
-	unlink_anon_vmas(new);
- out_free_mpol:
+out_free_mpol:
 	mpol_put(vma_policy(new));
- out_free_vma:
+out_free_vmi:
+	vma_iter_free(vmi);
+out_free_vma:
 	vm_area_free(new);
-	validate_mm_mt(mm);
+	validate_mm_mt(vma->vm_mm);
 	return err;
 }
 
@@ -2261,13 +2286,13 @@ int __split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
  * Split a vma into two pieces at address 'addr', a new vma is allocated
  * either for the first part or the tail.
  */
-int split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
+int split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	      unsigned long addr, int new_below)
 {
-	if (mm->map_count >= sysctl_max_map_count)
+	if (vma->vm_mm->map_count >= sysctl_max_map_count)
 		return -ENOMEM;
 
-	return __split_vma(mm, vma, addr, new_below);
+	return __split_vma(vmi, vma, addr, new_below);
 }
 
 static inline int munmap_sidetree(struct vm_area_struct *vma,
@@ -2284,19 +2309,19 @@ static inline int munmap_sidetree(struct vm_area_struct *vma,
 }
 
 /*
- * do_mas_align_munmap() - munmap the aligned region from @start to @end.
- * @mas: The maple_state, ideally set up to alter the correct tree location.
+ * do_vmi_align_munmap() - munmap the aligned region from @start to @end.
+ * @vmi: The vma iterator
  * @vma: The starting vm_area_struct
  * @mm: The mm_struct
  * @start: The aligned start address to munmap.
  * @end: The aligned end address to munmap.
  * @uf: The userfaultfd list_head
- * @downgrade: Set to true to attempt a write downgrade of the mmap_sem
+ * @downgrade: Set to true to attempt a write downgrade of the mmap_lock
  *
  * If @downgrade is true, check return code for potential release of the lock.
  */
 static int
-do_mas_align_munmap(struct ma_state *mas, struct vm_area_struct *vma,
+do_vmi_align_munmap(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		    struct mm_struct *mm, unsigned long start,
 		    unsigned long end, struct list_head *uf, bool downgrade)
 {
@@ -2308,10 +2333,6 @@ do_mas_align_munmap(struct ma_state *mas, struct vm_area_struct *vma,
 	mt_init_flags(&mt_detach, MT_FLAGS_LOCK_EXTERN);
 	mt_set_external_lock(&mt_detach, &mm->mmap_lock);
 
-	if (mas_preallocate(mas, vma, GFP_KERNEL))
-		return -ENOMEM;
-
-	mas->last = end - 1;
 	/*
 	 * If we need to split any vma, do it now to save pain later.
 	 *
@@ -2331,45 +2352,27 @@ do_mas_align_munmap(struct ma_state *mas, struct vm_area_struct *vma,
 		if (end < vma->vm_end && mm->map_count >= sysctl_max_map_count)
 			goto map_count_exceeded;
 
-		/*
-		 * mas_pause() is not needed since mas->index needs to be set
-		 * differently than vma->vm_end anyways.
-		 */
-		error = __split_vma(mm, vma, start, 0);
+		error = __split_vma(vmi, vma, start, 0);
 		if (error)
 			goto start_split_failed;
 
-		mas_set(mas, start);
-		vma = mas_walk(mas);
+		vma = vma_iter_load(vmi);
 	}
 
-	prev = mas_prev(mas, 0);
+	prev = vma_prev(vmi);
 	if (unlikely((!prev)))
-		mas_set(mas, start);
+		vma_iter_set(vmi, start);
 
 	/*
 	 * Detach a range of VMAs from the mm. Using next as a temp variable as
 	 * it is always overwritten.
 	 */
-	mas_for_each(mas, next, end - 1) {
+	for_each_vma_range(*vmi, next, end) {
 		/* Does it split the end? */
 		if (next->vm_end > end) {
-			struct vm_area_struct *split;
-
-			error = __split_vma(mm, next, end, 1);
+			error = __split_vma(vmi, next, end, 0);
 			if (error)
 				goto end_split_failed;
-
-			mas_set(mas, end);
-			split = mas_prev(mas, 0);
-			error = munmap_sidetree(split, &mas_detach);
-			if (error)
-				goto munmap_sidetree_failed;
-
-			count++;
-			if (vma == next)
-				vma = split;
-			break;
 		}
 		error = munmap_sidetree(next, &mas_detach);
 		if (error)
@@ -2382,9 +2385,7 @@ do_mas_align_munmap(struct ma_state *mas, struct vm_area_struct *vma,
 #endif
 	}
 
-	if (!next)
-		next = mas_next(mas, ULONG_MAX);
-
+	next = vma_next(vmi);
 	if (unlikely(uf)) {
 		/*
 		 * If userfaultfd_unmap_prep returns an error the vmas
@@ -2401,8 +2402,6 @@ do_mas_align_munmap(struct ma_state *mas, struct vm_area_struct *vma,
 			goto userfaultfd_error;
 	}
 
-	/* Point of no return */
-	mas_set_range(mas, start, end - 1);
 #if defined(CONFIG_DEBUG_VM_MAPLE_TREE)
 	/* Make sure no VMAs are about to be lost. */
 	{
@@ -2410,19 +2409,23 @@ do_mas_align_munmap(struct ma_state *mas, struct vm_area_struct *vma,
 		struct vm_area_struct *vma_mas, *vma_test;
 		int test_count = 0;
 
+		vma_iter_set(vmi, start);
 		rcu_read_lock();
 		vma_test = mas_find(&test, end - 1);
-		mas_for_each(mas, vma_mas, end - 1) {
+		for_each_vma_range(*vmi, vma_mas, end) {
 			BUG_ON(vma_mas != vma_test);
 			test_count++;
 			vma_test = mas_next(&test, end - 1);
 		}
 		rcu_read_unlock();
 		BUG_ON(count != test_count);
-		mas_set_range(mas, start, end - 1);
 	}
 #endif
-	mas_store_prealloc(mas, NULL);
+	/* Point of no return */
+	vma_iter_set(vmi, start);
+	if (vma_iter_clear_gfp(vmi, start, end, GFP_KERNEL))
+		return -ENOMEM;
+
 	mm->map_count -= count;
 	/*
 	 * Do not downgrade mmap_lock if we are next to VM_GROWSDOWN or
@@ -2438,7 +2441,11 @@ do_mas_align_munmap(struct ma_state *mas, struct vm_area_struct *vma,
 			mmap_write_downgrade(mm);
 	}
 
-	unmap_region(mm, &mt_detach, vma, prev, next, start, end);
+	/*
+	 * We can free page tables without write-locking mmap_lock because VMAs
+	 * were isolated before we downgraded mmap_lock.
+	 */
+	unmap_region(mm, &mt_detach, vma, prev, next, start, end, !downgrade);
 	/* Statistics and freeing VMAs */
 	mas_set(&mas_detach, start);
 	remove_mt(mm, &mas_detach);
@@ -2454,19 +2461,18 @@ end_split_failed:
 	__mt_destroy(&mt_detach);
 start_split_failed:
 map_count_exceeded:
-	mas_destroy(mas);
 	return error;
 }
 
 /*
- * do_mas_munmap() - munmap a given range.
- * @mas: The maple state
+ * do_vmi_munmap() - munmap a given range.
+ * @vmi: The vma iterator
  * @mm: The mm_struct
  * @start: The start address to munmap
  * @len: The length of the range to munmap
  * @uf: The userfaultfd list_head
  * @downgrade: set to true if the user wants to attempt to write_downgrade the
- * mmap_sem
+ * mmap_lock
  *
  * This function takes a @mas that is either pointing to the previous VMA or set
  * to MA_START and sets it up to remove the mapping(s).  The @len will be
@@ -2474,7 +2480,7 @@ map_count_exceeded:
  *
  * Returns: -EINVAL on failure, 1 on success and unlock, 0 otherwise.
  */
-int do_mas_munmap(struct ma_state *mas, struct mm_struct *mm,
+int do_vmi_munmap(struct vma_iterator *vmi, struct mm_struct *mm,
 		  unsigned long start, size_t len, struct list_head *uf,
 		  bool downgrade)
 {
@@ -2492,11 +2498,11 @@ int do_mas_munmap(struct ma_state *mas, struct mm_struct *mm,
 	arch_unmap(mm, start, end);
 
 	/* Find the first overlapping VMA */
-	vma = mas_find(mas, end - 1);
+	vma = vma_find(vmi, end);
 	if (!vma)
 		return 0;
 
-	return do_mas_align_munmap(mas, vma, mm, start, end, uf, downgrade);
+	return do_vmi_align_munmap(vmi, vma, mm, start, end, uf, downgrade);
 }
 
 /* do_munmap() - Wrapper function for non-maple tree aware do_munmap() calls.
@@ -2508,9 +2514,9 @@ int do_mas_munmap(struct ma_state *mas, struct mm_struct *mm,
 int do_munmap(struct mm_struct *mm, unsigned long start, size_t len,
 	      struct list_head *uf)
 {
-	MA_STATE(mas, &mm->mm_mt, start, start);
+	VMA_ITERATOR(vmi, mm, start);
 
-	return do_mas_munmap(&mas, mm, start, len, uf, false);
+	return do_vmi_munmap(&vmi, mm, start, len, uf, false);
 }
 
 unsigned long mmap_region(struct file *file, unsigned long addr,
@@ -2526,7 +2532,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 	unsigned long merge_start = addr, merge_end = end;
 	pgoff_t vm_pgoff;
 	int error;
-	MA_STATE(mas, &mm->mm_mt, addr, end - 1);
+	VMA_ITERATOR(vmi, mm, addr);
 
 	/* Check against address space limit. */
 	if (!may_expand_vm(mm, vm_flags, len >> PAGE_SHIFT)) {
@@ -2544,7 +2550,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 	}
 
 	/* Unmap any existing mapping in the area */
-	if (do_mas_munmap(&mas, mm, addr, len, uf, false))
+	if (do_vmi_munmap(&vmi, mm, addr, len, uf, false))
 		return -ENOMEM;
 
 	/*
@@ -2557,8 +2563,8 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 		vm_flags |= VM_ACCOUNT;
 	}
 
-	next = mas_next(&mas, ULONG_MAX);
-	prev = mas_prev(&mas, 0);
+	next = vma_next(&vmi);
+	prev = vma_prev(&vmi);
 	if (vm_flags & VM_SPECIAL)
 		goto cannot_expand;
 
@@ -2586,13 +2592,11 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 
 	/* Actually expand, if possible */
 	if (vma &&
-	    !vma_expand(&mas, vma, merge_start, merge_end, vm_pgoff, next)) {
+	    !vma_expand(&vmi, vma, merge_start, merge_end, vm_pgoff, next)) {
 		khugepaged_enter_vma(vma, vm_flags);
 		goto expanded;
 	}
 
-	mas.index = addr;
-	mas.last = end - 1;
 cannot_expand:
 	/*
 	 * Determine the object being mapped and call the appropriate
@@ -2605,9 +2609,10 @@ cannot_expand:
 		goto unacct_error;
 	}
 
+	vma_iter_set(&vmi, addr);
 	vma->vm_start = addr;
 	vma->vm_end = end;
-	vma->vm_flags = vm_flags;
+	vm_flags_init(vma, vm_flags);
 	vma->vm_page_prot = vm_get_page_prot(vm_flags);
 	vma->vm_pgoff = pgoff;
 
@@ -2627,19 +2632,20 @@ cannot_expand:
 		 * Expansion is handled above, merging is handled below.
 		 * Drivers should not alter the address of the VMA.
 		 */
-		if (WARN_ON((addr != vma->vm_start))) {
-			error = -EINVAL;
+		error = -EINVAL;
+		if (WARN_ON((addr != vma->vm_start)))
 			goto close_and_free_vma;
-		}
-		mas_reset(&mas);
 
+		vma_iter_set(&vmi, addr);
 		/*
 		 * If vm_flags changed after call_mmap(), we should try merge
 		 * vma again as we may succeed this time.
 		 */
 		if (unlikely(vm_flags != vma->vm_flags && prev)) {
-			merge = vma_merge(mm, prev, vma->vm_start, vma->vm_end, vma->vm_flags,
-				NULL, vma->vm_file, vma->vm_pgoff, NULL, NULL_VM_UFFD_CTX, NULL);
+			merge = vma_merge(&vmi, mm, prev, vma->vm_start,
+				    vma->vm_end, vma->vm_flags, NULL,
+				    vma->vm_file, vma->vm_pgoff, NULL,
+				    NULL_VM_UFFD_CTX, NULL);
 			if (merge) {
 				/*
 				 * ->mmap() can change vma->vm_file and fput
@@ -2666,9 +2672,8 @@ cannot_expand:
 		vma_set_anonymous(vma);
 	}
 
-	/* Allow architectures to sanity-check the vm_flags */
-	if (!arch_validate_flags(vma->vm_flags)) {
-		error = -EINVAL;
+	if (map_deny_write_exec(vma, vma->vm_flags)) {
+		error = -EACCES;
 		if (file)
 			goto close_and_free_vma;
 		else if (vma->vm_file)
@@ -2677,20 +2682,19 @@ cannot_expand:
 			goto free_vma;
 	}
 
-	if (mas_preallocate(&mas, vma, GFP_KERNEL)) {
-		error = -ENOMEM;
-		if (file)
-			goto close_and_free_vma;
-		else if (vma->vm_file)
-			goto unmap_and_free_vma;
-		else
-			goto free_vma;
-	}
+	/* Allow architectures to sanity-check the vm_flags */
+	error = -EINVAL;
+	if (!arch_validate_flags(vma->vm_flags))
+		goto close_and_free_vma;
+
+	error = -ENOMEM;
+	if (vma_iter_prealloc(&vmi))
+		goto close_and_free_vma;
 
 	if (vma->vm_file)
 		i_mmap_lock_write(vma->vm_file->f_mapping);
 
-	vma_mas_store(vma, &mas);
+	vma_iter_store(&vmi, vma);
 	mm->map_count++;
 	if (vma->vm_file) {
 		if (vma->vm_flags & VM_SHARED)
@@ -2721,7 +2725,7 @@ expanded:
 		if ((vm_flags & VM_SPECIAL) || vma_is_dax(vma) ||
 					is_vm_hugetlb_page(vma) ||
 					vma == get_gate_vma(current->mm))
-			vma->vm_flags &= VM_LOCKED_CLEAR_MASK;
+			vm_flags_clear(vma, VM_LOCKED_MASK);
 		else
 			mm->locked_vm += (len >> PAGE_SHIFT);
 	}
@@ -2736,7 +2740,7 @@ expanded:
 	 * then new mapped in-place (which must be aimed as
 	 * a completely new data area).
 	 */
-	vma->vm_flags |= VM_SOFTDIRTY;
+	vm_flags_set(vma, VM_SOFTDIRTY);
 
 	vma_set_page_prot(vma);
 
@@ -2744,14 +2748,18 @@ expanded:
 	return addr;
 
 close_and_free_vma:
-	if (vma->vm_ops && vma->vm_ops->close)
+	if (file && vma->vm_ops && vma->vm_ops->close)
 		vma->vm_ops->close(vma);
-unmap_and_free_vma:
-	fput(vma->vm_file);
-	vma->vm_file = NULL;
 
-	/* Undo any partial mapping done by a device driver. */
-	unmap_region(mm, mas.tree, vma, prev, next, vma->vm_start, vma->vm_end);
+	if (file || vma->vm_file) {
+unmap_and_free_vma:
+		fput(vma->vm_file);
+		vma->vm_file = NULL;
+
+		/* Undo any partial mapping done by a device driver. */
+		unmap_region(mm, &mm->mm_mt, vma, prev, next, vma->vm_start,
+			     vma->vm_end, true);
+	}
 	if (file && (vm_flags & VM_SHARED))
 		mapping_unmap_writable(file->f_mapping);
 free_vma:
@@ -2768,12 +2776,12 @@ static int __vm_munmap(unsigned long start, size_t len, bool downgrade)
 	int ret;
 	struct mm_struct *mm = current->mm;
 	LIST_HEAD(uf);
-	MA_STATE(mas, &mm->mm_mt, start, start);
+	VMA_ITERATOR(vmi, mm, start);
 
 	if (mmap_write_lock_killable(mm))
 		return -EINTR;
 
-	ret = do_mas_munmap(&mas, mm, start, len, &uf, downgrade);
+	ret = do_vmi_munmap(&vmi, mm, start, len, &uf, downgrade);
 	/*
 	 * Returning 1 indicates mmap_lock is downgraded.
 	 * But 1 is not legal return value of vm_munmap() and munmap(), reset
@@ -2886,33 +2894,34 @@ out:
 }
 
 /*
- * brk_munmap() - Unmap a parital vma.
- * @mas: The maple tree state.
- * @vma: The vma to be modified
- * @newbrk: the start of the address to unmap
- * @oldbrk: The end of the address to unmap
+ * do_vma_munmap() - Unmap a full or partial vma.
+ * @vmi: The vma iterator pointing at the vma
+ * @vma: The first vma to be munmapped
+ * @start: the start of the address to unmap
+ * @end: The end of the address to unmap
  * @uf: The userfaultfd list_head
+ * @downgrade: Attempt to downgrade or not
  *
- * Returns: 1 on success.
- * unmaps a partial VMA mapping.  Does not handle alignment, downgrades lock if
- * possible.
+ * Returns: 0 on success and not downgraded, 1 on success and downgraded.
+ * unmaps a VMA mapping when the vma iterator is already in position.
+ * Does not handle alignment.
  */
-static int do_brk_munmap(struct ma_state *mas, struct vm_area_struct *vma,
-			 unsigned long newbrk, unsigned long oldbrk,
-			 struct list_head *uf)
+int do_vma_munmap(struct vma_iterator *vmi, struct vm_area_struct *vma,
+		  unsigned long start, unsigned long end,
+		  struct list_head *uf, bool downgrade)
 {
 	struct mm_struct *mm = vma->vm_mm;
 	int ret;
 
-	arch_unmap(mm, newbrk, oldbrk);
-	ret = do_mas_align_munmap(mas, vma, mm, newbrk, oldbrk, uf, true);
+	arch_unmap(mm, start, end);
+	ret = do_vmi_align_munmap(vmi, vma, mm, start, end, uf, downgrade);
 	validate_mm_mt(mm);
 	return ret;
 }
 
 /*
  * do_brk_flags() - Increase the brk vma if the flags match.
- * @mas: The maple tree state.
+ * @vmi: The vma iterator
  * @addr: The start address
  * @len: The length of the increase
  * @vma: The vma,
@@ -2922,10 +2931,11 @@ static int do_brk_munmap(struct ma_state *mas, struct vm_area_struct *vma,
  * do not match then create a new anonymous VMA.  Eventually we may be able to
  * do some brk-specific accounting here.
  */
-static int do_brk_flags(struct ma_state *mas, struct vm_area_struct *vma,
+static int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		unsigned long addr, unsigned long len, unsigned long flags)
 {
 	struct mm_struct *mm = current->mm;
+	struct vma_prepare vp;
 
 	validate_mm_mt(mm);
 	/*
@@ -2949,23 +2959,17 @@ static int do_brk_flags(struct ma_state *mas, struct vm_area_struct *vma,
 	if (vma && vma->vm_end == addr && !vma_policy(vma) &&
 	    can_vma_merge_after(vma, flags, NULL, NULL,
 				addr >> PAGE_SHIFT, NULL_VM_UFFD_CTX, NULL)) {
-		mas_set_range(mas, vma->vm_start, addr + len - 1);
-		if (mas_preallocate(mas, vma, GFP_KERNEL))
-			return -ENOMEM;
+		if (vma_iter_prealloc(vmi))
+			goto unacct_fail;
 
 		vma_adjust_trans_huge(vma, vma->vm_start, addr + len, 0);
-		if (vma->anon_vma) {
-			anon_vma_lock_write(vma->anon_vma);
-			anon_vma_interval_tree_pre_update_vma(vma);
-		}
+		init_vma_prep(&vp, vma);
+		vma_prepare(&vp);
 		vma->vm_end = addr + len;
-		vma->vm_flags |= VM_SOFTDIRTY;
-		mas_store_prealloc(mas, vma);
+		vm_flags_set(vma, VM_SOFTDIRTY);
+		vma_iter_store(vmi, vma);
 
-		if (vma->anon_vma) {
-			anon_vma_interval_tree_post_update_vma(vma);
-			anon_vma_unlock_write(vma->anon_vma);
-		}
+		vma_complete(&vp, vmi, mm);
 		khugepaged_enter_vma(vma, flags);
 		goto out;
 	}
@@ -2973,16 +2977,15 @@ static int do_brk_flags(struct ma_state *mas, struct vm_area_struct *vma,
 	/* create a vma struct for an anonymous mapping */
 	vma = vm_area_alloc(mm);
 	if (!vma)
-		goto vma_alloc_fail;
+		goto unacct_fail;
 
 	vma_set_anonymous(vma);
 	vma->vm_start = addr;
 	vma->vm_end = addr + len;
 	vma->vm_pgoff = addr >> PAGE_SHIFT;
-	vma->vm_flags = flags;
+	vm_flags_init(vma, flags);
 	vma->vm_page_prot = vm_get_page_prot(flags);
-	mas_set_range(mas, vma->vm_start, addr + len - 1);
-	if (mas_store_gfp(mas, vma, GFP_KERNEL))
+	if (vma_iter_store_gfp(vmi, vma, GFP_KERNEL))
 		goto mas_store_fail;
 
 	mm->map_count++;
@@ -2992,13 +2995,13 @@ out:
 	mm->data_vm += len >> PAGE_SHIFT;
 	if (flags & VM_LOCKED)
 		mm->locked_vm += (len >> PAGE_SHIFT);
-	vma->vm_flags |= VM_SOFTDIRTY;
+	vm_flags_set(vma, VM_SOFTDIRTY);
 	validate_mm(mm);
 	return 0;
 
 mas_store_fail:
 	vm_area_free(vma);
-vma_alloc_fail:
+unacct_fail:
 	vm_unacct_memory(len >> PAGE_SHIFT);
 	return -ENOMEM;
 }
@@ -3011,7 +3014,7 @@ int vm_brk_flags(unsigned long addr, unsigned long request, unsigned long flags)
 	int ret;
 	bool populate;
 	LIST_HEAD(uf);
-	MA_STATE(mas, &mm->mm_mt, addr, addr);
+	VMA_ITERATOR(vmi, mm, addr);
 
 	len = PAGE_ALIGN(request);
 	if (len < request)
@@ -3030,12 +3033,12 @@ int vm_brk_flags(unsigned long addr, unsigned long request, unsigned long flags)
 	if (ret)
 		goto limits_failed;
 
-	ret = do_mas_munmap(&mas, mm, addr, len, &uf, 0);
+	ret = do_vmi_munmap(&vmi, mm, addr, len, &uf, 0);
 	if (ret)
 		goto munmap_failed;
 
-	vma = mas_prev(&mas, 0);
-	ret = do_brk_flags(&mas, vma, addr, len, flags);
+	vma = vma_prev(&vmi);
+	ret = do_brk_flags(&vmi, vma, addr, len, flags);
 	populate = ((mm->def_flags & VM_LOCKED) != 0);
 	mmap_write_unlock(mm);
 	userfaultfd_unmap_complete(mm, &uf);
@@ -3083,7 +3086,7 @@ void exit_mmap(struct mm_struct *mm)
 	tlb_gather_mmu_fullmm(&tlb, mm);
 	/* update_hiwater_rss(mm) here? but nobody should be looking */
 	/* Use ULONG_MAX here to ensure all VMAs in the mm are unmapped */
-	unmap_vmas(&tlb, &mm->mm_mt, vma, 0, ULONG_MAX);
+	unmap_vmas(&tlb, &mm->mm_mt, vma, 0, ULONG_MAX, false);
 	mmap_read_unlock(mm);
 
 	/*
@@ -3171,6 +3174,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 	struct mm_struct *mm = vma->vm_mm;
 	struct vm_area_struct *new_vma, *prev;
 	bool faulted_in_anon_vma = true;
+	VMA_ITERATOR(vmi, mm, addr);
 
 	validate_mm_mt(mm);
 	/*
@@ -3186,7 +3190,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 	if (new_vma && new_vma->vm_start < addr + len)
 		return NULL;	/* should never get here */
 
-	new_vma = vma_merge(mm, prev, addr, addr + len, vma->vm_flags,
+	new_vma = vma_merge(&vmi, mm, prev, addr, addr + len, vma->vm_flags,
 			    vma->anon_vma, vma->vm_file, pgoff, vma_policy(vma),
 			    vma->vm_userfaultfd_ctx, anon_vma_name(vma));
 	if (new_vma) {
@@ -3391,8 +3395,8 @@ static struct vm_area_struct *__install_special_mapping(
 	vma->vm_start = addr;
 	vma->vm_end = addr + len;
 
-	vma->vm_flags = vm_flags | mm->def_flags | VM_DONTEXPAND | VM_SOFTDIRTY;
-	vma->vm_flags &= VM_LOCKED_CLEAR_MASK;
+	vm_flags_init(vma, (vm_flags | mm->def_flags |
+		      VM_DONTEXPAND | VM_SOFTDIRTY) & ~VM_LOCKED_MASK);
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 
 	vma->vm_ops = ops;
@@ -3745,13 +3749,9 @@ static int reserve_mem_notifier(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
-static struct notifier_block reserve_mem_nb = {
-	.notifier_call = reserve_mem_notifier,
-};
-
 static int __meminit init_reserve_notifier(void)
 {
-	if (register_hotmemory_notifier(&reserve_mem_nb))
+	if (hotplug_memory_notifier(reserve_mem_notifier, DEFAULT_CALLBACK_PRI))
 		pr_err("Failed registering memory add/remove notifier for admin reserve\n");
 
 	return 0;

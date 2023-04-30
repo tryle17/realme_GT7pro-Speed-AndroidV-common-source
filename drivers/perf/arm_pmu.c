@@ -547,17 +547,10 @@ static void armpmu_disable(struct pmu *pmu)
  * microarchitecture, and aren't suitable for another. Thus, only match CPUs of
  * the same microarchitecture.
  */
-static int armpmu_filter_match(struct perf_event *event)
+static bool armpmu_filter(struct pmu *pmu, int cpu)
 {
-	struct arm_pmu *armpmu = to_arm_pmu(event->pmu);
-	unsigned int cpu = smp_processor_id();
-	int ret;
-
-	ret = cpumask_test_cpu(cpu, &armpmu->supported_cpus);
-	if (ret && armpmu->filter_match)
-		return armpmu->filter_match(event);
-
-	return ret;
+	struct arm_pmu *armpmu = to_arm_pmu(pmu);
+	return !cpumask_test_cpu(cpu, &armpmu->supported_cpus);
 }
 
 static ssize_t cpus_show(struct device *dev,
@@ -759,17 +752,8 @@ static void cpu_pm_pmu_setup(struct arm_pmu *armpmu, unsigned long cmd)
 		case CPU_PM_ENTER_FAILED:
 			 /*
 			  * Restore and enable the counter.
-			  * armpmu_start() indirectly calls
-			  *
-			  * perf_event_update_userpage()
-			  *
-			  * that requires RCU read locking to be functional,
-			  * wrap the call within RCU_NONIDLE to make the
-			  * RCU subsystem aware this cpu is not idle from
-			  * an RCU perspective for the armpmu_start() call
-			  * duration.
 			  */
-			RCU_NONIDLE(armpmu_start(event, PERF_EF_RELOAD));
+			armpmu_start(event, PERF_EF_RELOAD);
 			break;
 		default:
 			break;
@@ -882,14 +866,13 @@ struct arm_pmu *armpmu_alloc(void)
 		.start		= armpmu_start,
 		.stop		= armpmu_stop,
 		.read		= armpmu_read,
-		.filter_match	= armpmu_filter_match,
+		.filter		= armpmu_filter,
 		.attr_groups	= pmu->attr_groups,
 		/*
 		 * This is a CPU PMU potentially in a heterogeneous
 		 * configuration (e.g. big.LITTLE). This is not an uncore PMU,
 		 * and we have taken ctx sharing into account (e.g. with our
-		 * pmu::filter_match callback and pmu::event_init group
-		 * validation).
+		 * pmu::filter callback and pmu::event_init group validation).
 		 */
 		.capabilities	= PERF_PMU_CAP_HETEROGENEOUS_CPUS | PERF_PMU_CAP_EXTENDED_REGS,
 	};

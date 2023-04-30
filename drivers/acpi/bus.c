@@ -324,6 +324,8 @@ static void acpi_bus_osc_negotiate_platform_control(void)
 	capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_PCLPI_SUPPORT;
 	if (IS_ENABLED(CONFIG_ACPI_PRMT))
 		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_PRM_SUPPORT;
+	if (IS_ENABLED(CONFIG_ACPI_FFH))
+		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_FFH_OPR_SUPPORT;
 
 #ifdef CONFIG_ARM64
 	capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_GENERIC_INITIATOR_SUPPORT;
@@ -1012,7 +1014,7 @@ static int acpi_bus_match(struct device *dev, struct device_driver *drv)
 		&& !acpi_match_device_ids(acpi_dev, acpi_drv->ids);
 }
 
-static int acpi_device_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int acpi_device_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
 	return __acpi_device_uevent_modalias(to_acpi_device(dev), env);
 }
@@ -1409,6 +1411,7 @@ static int __init acpi_init(void)
 		disable_acpi();
 		return result;
 	}
+	acpi_init_ffh();
 
 	pci_mmcfg_late_init();
 	acpi_iort_init();

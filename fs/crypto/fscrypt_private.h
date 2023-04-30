@@ -495,13 +495,7 @@ struct fscrypt_master_key_secret {
 struct fscrypt_master_key {
 
 	/*
-	 * Back-pointer to the super_block of the filesystem to which this
-	 * master key has been added.  Only valid if ->mk_active_refs > 0.
-	 */
-	struct super_block			*mk_sb;
-
-	/*
-	 * Link in ->mk_sb->s_master_keys->key_hashtable.
+	 * Link in ->s_master_keys->key_hashtable.
 	 * Only valid if ->mk_active_refs > 0.
 	 */
 	struct hlist_node			mk_node;
@@ -512,7 +506,7 @@ struct fscrypt_master_key {
 	/*
 	 * Active and structural reference counts.  An active ref guarantees
 	 * that the struct continues to exist, continues to be in the keyring
-	 * ->mk_sb->s_master_keys, and that any embedded subkeys (e.g.
+	 * ->s_master_keys, and that any embedded subkeys (e.g.
 	 * ->mk_direct_keys) that have been prepared continue to exist.
 	 * A structural ref only guarantees that the struct continues to exist.
 	 *
@@ -625,7 +619,8 @@ static inline int master_key_spec_len(const struct fscrypt_key_specifier *spec)
 
 void fscrypt_put_master_key(struct fscrypt_master_key *mk);
 
-void fscrypt_put_master_key_activeref(struct fscrypt_master_key *mk);
+void fscrypt_put_master_key_activeref(struct super_block *sb,
+				      struct fscrypt_master_key *mk);
 
 struct fscrypt_master_key *
 fscrypt_find_master_key(struct super_block *sb,
@@ -633,6 +628,9 @@ fscrypt_find_master_key(struct super_block *sb,
 
 int fscrypt_get_test_dummy_key_identifier(
 			  u8 key_identifier[FSCRYPT_KEY_IDENTIFIER_SIZE]);
+
+int fscrypt_add_test_dummy_key(struct super_block *sb,
+			       struct fscrypt_key_specifier *key_spec);
 
 int fscrypt_verify_key_added(struct super_block *sb,
 			     const u8 identifier[FSCRYPT_KEY_IDENTIFIER_SIZE]);
@@ -712,6 +710,7 @@ bool fscrypt_policies_equal(const union fscrypt_policy *policy1,
 			    const union fscrypt_policy *policy2);
 int fscrypt_policy_to_key_spec(const union fscrypt_policy *policy,
 			       struct fscrypt_key_specifier *key_spec);
+const union fscrypt_policy *fscrypt_get_dummy_policy(struct super_block *sb);
 bool fscrypt_supported_policy(const union fscrypt_policy *policy_u,
 			      const struct inode *inode);
 int fscrypt_policy_from_context(union fscrypt_policy *policy_u,

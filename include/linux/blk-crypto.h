@@ -13,6 +13,7 @@ enum blk_crypto_mode_num {
 	BLK_ENCRYPTION_MODE_AES_256_XTS,
 	BLK_ENCRYPTION_MODE_AES_128_CBC_ESSIV,
 	BLK_ENCRYPTION_MODE_ADIANTUM,
+	BLK_ENCRYPTION_MODE_SM4_XTS,
 	BLK_ENCRYPTION_MODE_MAX,
 };
 
@@ -161,9 +162,6 @@ bool blk_crypto_config_supported(struct block_device *bdev,
 int blk_crypto_derive_sw_secret(struct block_device *bdev,
 				const u8 *eph_key, size_t eph_key_size,
 				u8 sw_secret[BLK_CRYPTO_SW_SECRET_SIZE]);
-
-bool blk_crypto_hw_wrapped_keys_compatible(struct block_device *bdev1,
-					   struct block_device *bdev2);
 
 #else /* CONFIG_BLK_INLINE_ENCRYPTION */
 

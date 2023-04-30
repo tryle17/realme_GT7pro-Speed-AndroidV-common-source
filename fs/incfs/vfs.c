@@ -5,6 +5,7 @@
 
 #include <linux/blkdev.h>
 #include <linux/compat.h>
+#include <linux/delay.h>
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/fs_stack.h>
@@ -36,7 +37,7 @@ static void dentry_release(struct dentry *d);
 static int iterate_incfs_dir(struct file *file, struct dir_context *ctx);
 static struct dentry *dir_lookup(struct inode *dir_inode,
 		struct dentry *dentry, unsigned int flags);
-static int dir_mkdir(struct user_namespace *ns, struct inode *dir,
+static int dir_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 		     struct dentry *dentry, umode_t mode);
 static int dir_unlink(struct inode *dir, struct dentry *dentry);
 static int dir_link(struct dentry *old_dentry, struct inode *dir,
@@ -60,14 +61,14 @@ static struct inode *alloc_inode(struct super_block *sb);
 static void free_inode(struct inode *inode);
 static void evict_inode(struct inode *inode);
 
-static int incfs_setattr(struct user_namespace *ns, struct dentry *dentry,
+static int incfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 			 struct iattr *ia);
-static int incfs_getattr(struct user_namespace *ns, const struct path *path,
+static int incfs_getattr(struct mnt_idmap *idmap, const struct path *path,
 			 struct kstat *stat, u32 request_mask,
 			 unsigned int query_flags);
 static ssize_t incfs_getxattr(struct dentry *d, const char *name,
 			void *value, size_t size);
-static ssize_t incfs_setxattr(struct user_namespace *ns, struct dentry *d,
+static ssize_t incfs_setxattr(struct mnt_idmap *idmap, struct dentry *d,
 			      const char *name, void *value, size_t size,
 			      int flags);
 static ssize_t incfs_listxattr(struct dentry *d, char *list, size_t size);
@@ -83,7 +84,7 @@ static const struct super_operations incfs_super_ops = {
 	.show_options = show_options
 };
 
-static int dir_rename_wrap(struct user_namespace *ns, struct inode *old_dir,
+static int dir_rename_wrap(struct mnt_idmap *idmap, struct inode *old_dir,
 			   struct dentry *old_dentry, struct inode *new_dir,
 			   struct dentry *new_dentry, unsigned int flags)
 {
@@ -170,12 +171,12 @@ static int incfs_handler_getxattr(const struct xattr_handler *xh,
 }
 
 static int incfs_handler_setxattr(const struct xattr_handler *xh,
-				  struct user_namespace *ns,
+				  struct mnt_idmap *idmap,
 				  struct dentry *d, struct inode *inode,
 				  const char *name, const void *buffer,
 				  size_t size, int flags)
 {
-	return incfs_setxattr(ns, d, name, (void *)buffer, size, flags);
+	return incfs_setxattr(idmap, d, name, (void *)buffer, size, flags);
 }
 
 static const struct xattr_handler incfs_xattr_handler = {
@@ -296,7 +297,7 @@ static u64 read_size_attr(struct dentry *backing_dentry)
 	__le64 attr_value;
 	ssize_t bytes_read;
 
-	bytes_read = vfs_getxattr(&init_user_ns, backing_dentry, INCFS_XATTR_SIZE_NAME,
+	bytes_read = vfs_getxattr(&nop_mnt_idmap, backing_dentry, INCFS_XATTR_SIZE_NAME,
 			(char *)&attr_value, sizeof(attr_value));
 
 	if (bytes_read != sizeof(attr_value))
@@ -308,7 +309,7 @@ static u64 read_size_attr(struct dentry *backing_dentry)
 /* Read verity flag from the attribute. Quicker than reading the header */
 static bool read_verity_attr(struct dentry *backing_dentry)
 {
-	return vfs_getxattr(&init_user_ns, backing_dentry, INCFS_XATTR_VERITY_NAME, NULL, 0)
+	return vfs_getxattr(&nop_mnt_idmap, backing_dentry, INCFS_XATTR_VERITY_NAME, NULL, 0)
 		>= 0;
 }
 
@@ -463,7 +464,7 @@ static struct dentry *open_or_create_special_dir(struct dentry *backing_dir,
 
 	/* Index needs to be created. */
 	inode_lock_nested(backing_inode, I_MUTEX_PARENT);
-	err = vfs_mkdir(&init_user_ns, backing_inode, index_dentry, 0777);
+	err = vfs_mkdir(&nop_mnt_idmap, backing_inode, index_dentry, 0777);
 	inode_unlock(backing_inode);
 
 	if (err) {
@@ -483,7 +484,8 @@ static struct dentry *open_or_create_special_dir(struct dentry *backing_dir,
 
 static int read_single_page_timeouts(struct data_file *df, struct file *f,
 				     int block_index, struct mem_range range,
-				     struct mem_range tmp)
+				     struct mem_range tmp,
+				     unsigned int *delayed_min_us)
 {
 	struct mount_info *mi = df->df_mount_info;
 	struct incfs_read_data_file_timeouts timeouts = {
@@ -515,7 +517,23 @@ static int read_single_page_timeouts(struct data_file *df, struct file *f,
 	}
 
 	return incfs_read_data_file_block(range, f, block_index, tmp,
-					  &timeouts);
+					  &timeouts, delayed_min_us);
+}
+
+static int usleep_interruptible(u32 us)
+{
+	/* See:
+	 * https://www.kernel.org/doc/Documentation/timers/timers-howto.txt
+	 * for explanation
+	 */
+	if (us < 10) {
+		udelay(us);
+		return 0;
+	} else if (us < 20000) {
+		usleep_range(us, us + us / 10);
+		return 0;
+	} else
+		return msleep_interruptible(us / 1000);
 }
 
 static int read_folio(struct file *f, struct folio *folio)
@@ -529,6 +547,7 @@ static int read_folio(struct file *f, struct folio *folio)
 	int result = 0;
 	void *page_start;
 	int block_index;
+	unsigned int delayed_min_us = 0;
 
 	if (!df) {
 		SetPageError(page);
@@ -554,7 +573,8 @@ static int read_folio(struct file *f, struct folio *folio)
 		bytes_to_read = min_t(loff_t, size - offset, PAGE_SIZE);
 
 		read_result = read_single_page_timeouts(df, f, block_index,
-					range(page_start, bytes_to_read), tmp);
+					range(page_start, bytes_to_read), tmp,
+					&delayed_min_us);
 
 		free_pages((unsigned long)tmp.data, get_order(tmp.len));
 	} else {
@@ -576,6 +596,8 @@ err:
 	flush_dcache_page(page);
 	kunmap(page);
 	unlock_page(page);
+	if (delayed_min_us)
+		usleep_interruptible(delayed_min_us);
 	return result;
 }
 
@@ -586,7 +608,7 @@ int incfs_link(struct dentry *what, struct dentry *where)
 	int error = 0;
 
 	inode_lock_nested(pinode, I_MUTEX_PARENT);
-	error = vfs_link(what, &init_user_ns, pinode, where, NULL);
+	error = vfs_link(what, &nop_mnt_idmap, pinode, where, NULL);
 	inode_unlock(pinode);
 
 	dput(parent_dentry);
@@ -600,7 +622,7 @@ int incfs_unlink(struct dentry *dentry)
 	int error = 0;
 
 	inode_lock_nested(pinode, I_MUTEX_PARENT);
-	error = vfs_unlink(&init_user_ns, pinode, dentry, NULL);
+	error = vfs_unlink(&nop_mnt_idmap, pinode, dentry, NULL);
 	inode_unlock(pinode);
 
 	dput(parent_dentry);
@@ -614,7 +636,7 @@ static int incfs_rmdir(struct dentry *dentry)
 	int error = 0;
 
 	inode_lock_nested(pinode, I_MUTEX_PARENT);
-	error = vfs_rmdir(&init_user_ns, pinode, dentry);
+	error = vfs_rmdir(&nop_mnt_idmap, pinode, dentry);
 	inode_unlock(pinode);
 
 	dput(parent_dentry);
@@ -669,8 +691,7 @@ out:
 	dput(file);
 }
 
-static void maybe_delete_incomplete_file(struct file *f,
-					 struct data_file *df)
+static void handle_file_completed(struct file *f, struct data_file *df)
 {
 	struct backing_file_context *bfc;
 	struct mount_info *mi = df->df_mount_info;
@@ -678,9 +699,6 @@ static void maybe_delete_incomplete_file(struct file *f,
 	struct dentry *incomplete_file_dentry = NULL;
 	const struct cred *old_cred = override_creds(mi->mi_owner);
 	int error;
-
-	if (atomic_read(&df->df_data_blocks_written) < df->df_data_block_count)
-		goto out;
 
 	/* Truncate file to remove any preallocated space */
 	bfc = df->df_backing_file_context;
@@ -740,6 +758,7 @@ static long ioctl_fill_blocks(struct file *f, void __user *arg)
 	u8 *data_buf = NULL;
 	ssize_t error = 0;
 	int i = 0;
+	bool complete = false;
 
 	if (!df)
 		return -EBADF;
@@ -781,7 +800,7 @@ static long ioctl_fill_blocks(struct file *f, void __user *arg)
 							     data_buf);
 		} else {
 			error = incfs_process_new_data_block(df, &fill_block,
-							     data_buf);
+							data_buf, &complete);
 		}
 		if (error)
 			break;
@@ -790,7 +809,8 @@ static long ioctl_fill_blocks(struct file *f, void __user *arg)
 	if (data_buf)
 		free_pages((unsigned long)data_buf, get_order(data_buf_size));
 
-	maybe_delete_incomplete_file(f, df);
+	if (complete)
+		handle_file_completed(f, df);
 
 	/*
 	 * Only report the error if no records were processed, otherwise
@@ -1034,7 +1054,7 @@ out:
 	return ERR_PTR(err);
 }
 
-static int dir_mkdir(struct user_namespace *ns, struct inode *dir, struct dentry *dentry, umode_t mode)
+static int dir_mkdir(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry, umode_t mode)
 {
 	struct mount_info *mi = get_mount_info(dir->i_sb);
 	struct inode_info *dir_node = get_incfs_node(dir);
@@ -1070,7 +1090,7 @@ static int dir_mkdir(struct user_namespace *ns, struct inode *dir, struct dentry
 		goto out;
 	}
 	inode_lock_nested(dir_node->n_backing_inode, I_MUTEX_PARENT);
-	err = vfs_mkdir(ns, dir_node->n_backing_inode, backing_dentry, mode | 0222);
+	err = vfs_mkdir(idmap, dir_node->n_backing_inode, backing_dentry, mode | 0222);
 	inode_unlock(dir_node->n_backing_inode);
 	if (!err) {
 		struct inode *inode = NULL;
@@ -1120,7 +1140,7 @@ static int file_delete(struct mount_info *mi, struct dentry *dentry,
 	if (nlink > 3)
 		goto just_unlink;
 
-	uuid_size = vfs_getxattr(&init_user_ns, backing_dentry, INCFS_XATTR_ID_NAME,
+	uuid_size = vfs_getxattr(&nop_mnt_idmap, backing_dentry, INCFS_XATTR_ID_NAME,
 			file_id_str, 2 * sizeof(incfs_uuid_t));
 	if (uuid_size < 0) {
 		error = uuid_size;
@@ -1392,8 +1412,8 @@ static int dir_rename(struct inode *old_dir, struct dentry *old_dentry,
 	rd.new_dir	= d_inode(backing_new_dir_dentry);
 	rd.new_dentry	= backing_new_dentry;
 	rd.flags	= flags;
-	rd.old_mnt_userns = &init_user_ns;
-	rd.new_mnt_userns = &init_user_ns;
+	rd.old_mnt_idmap = &nop_mnt_idmap;
+	rd.new_mnt_idmap = &nop_mnt_idmap;
 	rd.delegated_inode = NULL;
 
 	error = vfs_rename(&rd);
@@ -1598,7 +1618,7 @@ static void evict_inode(struct inode *inode)
 	clear_inode(inode);
 }
 
-static int incfs_setattr(struct user_namespace *ns, struct dentry *dentry,
+static int incfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 			 struct iattr *ia)
 {
 	struct dentry_info *di = get_incfs_dentry(dentry);
@@ -1630,7 +1650,7 @@ static int incfs_setattr(struct user_namespace *ns, struct dentry *dentry,
 	}
 
 	inode_lock(d_inode(backing_dentry));
-	error = notify_change(ns, backing_dentry, ia, NULL);
+	error = notify_change(idmap, backing_dentry, ia, NULL);
 	inode_unlock(d_inode(backing_dentry));
 
 	if (error)
@@ -1639,17 +1659,17 @@ static int incfs_setattr(struct user_namespace *ns, struct dentry *dentry,
 	if (S_ISREG(backing_inode->i_mode))
 		ia->ia_mode &= ~0222;
 
-	return simple_setattr(ns, dentry, ia);
+	return simple_setattr(idmap, dentry, ia);
 }
 
 
-static int incfs_getattr(struct user_namespace *ns, const struct path *path,
+static int incfs_getattr(struct mnt_idmap *idmap, const struct path *path,
 			 struct kstat *stat, u32 request_mask,
 			 unsigned int query_flags)
 {
 	struct inode *inode = d_inode(path->dentry);
 
-	generic_fillattr(ns, inode, stat);
+	generic_fillattr(idmap, inode, stat);
 
 	if (inode->i_ino < INCFS_START_INO_RANGE)
 		return 0;
@@ -1689,7 +1709,7 @@ static ssize_t incfs_getxattr(struct dentry *d, const char *name,
 	int i;
 
 	if (di && di->backing_path.dentry)
-		return vfs_getxattr(&init_user_ns, di->backing_path.dentry, name, value, size);
+		return vfs_getxattr(&nop_mnt_idmap, di->backing_path.dentry, name, value, size);
 
 	if (strcmp(name, "security.selinux"))
 		return -ENODATA;
@@ -1713,7 +1733,7 @@ static ssize_t incfs_getxattr(struct dentry *d, const char *name,
 }
 
 
-static ssize_t incfs_setxattr(struct user_namespace *ns, struct dentry *d,
+static ssize_t incfs_setxattr(struct mnt_idmap *idmap, struct dentry *d,
 			      const char *name, void *value, size_t size,
 			      int flags)
 {
@@ -1724,7 +1744,7 @@ static ssize_t incfs_setxattr(struct user_namespace *ns, struct dentry *d,
 	int i;
 
 	if (di && di->backing_path.dentry)
-		return vfs_setxattr(ns, di->backing_path.dentry, name, value,
+		return vfs_setxattr(idmap, di->backing_path.dentry, name, value,
 				    size, flags);
 
 	if (strcmp(name, "security.selinux"))
@@ -1926,24 +1946,30 @@ void incfs_kill_sb(struct super_block *sb)
 
 	pr_debug("incfs: unmount\n");
 
+	/*
+	 * We must kill the super before freeing mi, since killing the super
+	 * triggers inode eviction, which triggers the final update of the
+	 * backing file, which uses certain information for mi
+	 */
+	kill_anon_super(sb);
+
 	if (mi) {
 		if (mi->mi_backing_dir_path.dentry)
 			dinode = d_inode(mi->mi_backing_dir_path.dentry);
 
 		if (dinode) {
 			if (mi->mi_index_dir && mi->mi_index_free)
-				vfs_rmdir(&init_user_ns, dinode,
+				vfs_rmdir(&nop_mnt_idmap, dinode,
 					  mi->mi_index_dir);
 
 			if (mi->mi_incomplete_dir && mi->mi_incomplete_free)
-				vfs_rmdir(&init_user_ns, dinode,
+				vfs_rmdir(&nop_mnt_idmap, dinode,
 					  mi->mi_incomplete_dir);
 		}
 
 		incfs_free_mount_info(mi);
 		sb->s_fs_info = NULL;
 	}
-	kill_anon_super(sb);
 }
 
 static int show_options(struct seq_file *m, struct dentry *root)

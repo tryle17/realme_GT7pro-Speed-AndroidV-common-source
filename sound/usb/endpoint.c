@@ -769,7 +769,8 @@ struct snd_usb_endpoint *
 snd_usb_endpoint_open(struct snd_usb_audio *chip,
 		      const struct audioformat *fp,
 		      const struct snd_pcm_hw_params *params,
-		      bool is_sync_ep)
+		      bool is_sync_ep,
+		      bool fixed_rate)
 {
 	struct snd_usb_endpoint *ep;
 	int ep_num = is_sync_ep ? fp->sync_ep : fp->endpoint;
@@ -825,6 +826,7 @@ snd_usb_endpoint_open(struct snd_usb_audio *chip,
 		ep->implicit_fb_sync = fp->implicit_fb;
 		ep->need_setup = true;
 		ep->need_prepare = true;
+		ep->fixed_rate = fixed_rate;
 
 		usb_audio_dbg(chip, "  channels=%d, rate=%d, format=%s, period_bytes=%d, periods=%d, implicit_fb=%d\n",
 			      ep->cur_channels, ep->cur_rate,
@@ -858,7 +860,6 @@ snd_usb_endpoint_open(struct snd_usb_audio *chip,
 	mutex_unlock(&chip->mutex);
 	return ep;
 }
-EXPORT_SYMBOL_GPL(snd_usb_endpoint_open);
 
 /*
  * snd_usb_endpoint_set_sync: Link data and sync endpoints
@@ -951,7 +952,6 @@ void snd_usb_endpoint_close(struct snd_usb_audio *chip,
 	}
 	mutex_unlock(&chip->mutex);
 }
-EXPORT_SYMBOL_GPL(snd_usb_endpoint_close);
 
 /* Prepare for suspening EP, called from the main suspend handler */
 void snd_usb_endpoint_suspend(struct snd_usb_endpoint *ep)
@@ -1402,7 +1402,6 @@ int snd_usb_endpoint_set_params(struct snd_usb_audio *chip,
 	mutex_unlock(&chip->mutex);
 	return err;
 }
-EXPORT_SYMBOL_GPL(snd_usb_endpoint_set_params);
 
 static int init_sample_rate(struct snd_usb_audio *chip,
 			    struct snd_usb_endpoint *ep)
@@ -1416,11 +1415,13 @@ static int init_sample_rate(struct snd_usb_audio *chip,
 	if (clock && !clock->need_setup)
 		return 0;
 
-	err = snd_usb_init_sample_rate(chip, ep->cur_audiofmt, rate);
-	if (err < 0) {
-		if (clock)
-			clock->rate = 0; /* reset rate */
-		return err;
+	if (!ep->fixed_rate) {
+		err = snd_usb_init_sample_rate(chip, ep->cur_audiofmt, rate);
+		if (err < 0) {
+			if (clock)
+				clock->rate = 0; /* reset rate */
+			return err;
+		}
 	}
 
 	if (clock)
@@ -1509,7 +1510,6 @@ unlock:
 	mutex_unlock(&chip->mutex);
 	return err;
 }
-EXPORT_SYMBOL_GPL(snd_usb_endpoint_prepare);
 
 /* get the current rate set to the given clock by any endpoint */
 int snd_usb_endpoint_get_clock_rate(struct snd_usb_audio *chip, int clock)
@@ -1677,6 +1677,13 @@ void snd_usb_endpoint_stop(struct snd_usb_endpoint *ep, bool keep_pending)
 		stop_urbs(ep, false, keep_pending);
 		if (ep->clock_ref)
 			atomic_dec(&ep->clock_ref->locked);
+
+		if (ep->chip->quirk_flags & QUIRK_FLAG_FORCE_IFACE_RESET &&
+		    usb_pipeout(ep->pipe)) {
+			ep->need_prepare = true;
+			if (ep->iface_ref)
+				ep->iface_ref->need_setup = true;
+		}
 	}
 }
 

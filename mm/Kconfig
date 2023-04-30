@@ -191,6 +191,25 @@ config ZSMALLOC_STAT
 	  information to userspace via debugfs.
 	  If unsure, say N.
 
+config ZSMALLOC_CHAIN_SIZE
+	int "Maximum number of physical pages per-zspage"
+	default 8
+	range 4 16
+	depends on ZSMALLOC
+	help
+	  This option sets the upper limit on the number of physical pages
+	  that a zmalloc page (zspage) can consist of. The optimal zspage
+	  chain size is calculated for each size class during the
+	  initialization of the pool.
+
+	  Changing this option can alter the characteristics of size classes,
+	  such as the number of pages per zspage and the number of objects
+	  per zspage. This can also result in different configurations of
+	  the pool, as zsmalloc merges size classes with similar
+	  characteristics.
+
+	  For more information, see zsmalloc documentation.
+
 menu "SLAB allocator options"
 
 choice
@@ -801,7 +820,7 @@ endchoice
 
 config THP_SWAP
 	def_bool y
-	depends on TRANSPARENT_HUGEPAGE && ARCH_WANTS_THP_SWAP && SWAP
+	depends on TRANSPARENT_HUGEPAGE && ARCH_WANTS_THP_SWAP && SWAP && 64BIT
 	help
 	  Swap transparent huge pages in one piece, without splitting.
 	  XXX: For now, swap cluster backing transparent huge page
@@ -1031,6 +1050,14 @@ config ARCH_USES_HIGH_VMA_FLAGS
 config ARCH_HAS_PKEYS
 	bool
 
+config ARCH_USES_PG_ARCH_X
+	bool
+	help
+	  Enable the definition of PG_arch_x page flags with x > 1. Only
+	  suitable for 64-bit architectures with CONFIG_FLATMEM or
+	  CONFIG_SPARSEMEM_VMEMMAP enabled, otherwise there may not be
+	  enough room for additional bits in page->flags.
+
 config VM_EVENT_COUNTERS
 	default y
 	bool "Enable VM event counters for /proc/vmstat" if EXPERT
@@ -1065,12 +1092,12 @@ config GUP_TEST
 	  pin_user_pages*(), or pinned via get_user_pages*(), as specified
 	  by other command line arguments.
 
-	  See tools/testing/selftests/vm/gup_test.c
+	  See tools/testing/selftests/mm/gup_test.c
 
 comment "GUP_TEST needs to have DEBUG_FS enabled"
 	depends on !GUP_TEST && !DEBUG_FS
 
-config GUP_GET_PTE_LOW_HIGH
+config GUP_GET_PXX_LOW_HIGH
 	bool
 
 config ARCH_HAS_PTE_SPECIAL
@@ -1100,7 +1127,13 @@ config IO_MAPPING
 	bool
 
 config SECRETMEM
-	def_bool ARCH_HAS_SET_DIRECT_MAP && !EMBEDDED
+	default y
+	bool "Enable memfd_secret() system call" if EXPERT
+	depends on ARCH_HAS_SET_DIRECT_MAP
+	help
+	  Enable the memfd_secret() system call with the ability to create
+	  memory areas visible only in the context of the owning process and
+	  not mapped to other processes and other kernel page tables.
 
 config ANON_VMA_NAME
 	bool "Anonymous VMA name support"
@@ -1133,17 +1166,10 @@ config HAVE_ARCH_USERFAULTFD_MINOR
 	help
 	  Arch has userfaultfd minor fault support
 
-config PTE_MARKER
-	bool
-
-	help
-	  Allows to create marker PTEs for file-backed memory.
-
 config PTE_MARKER_UFFD_WP
 	bool "Userfaultfd write protection support for shmem/hugetlbfs"
 	default y
 	depends on HAVE_ARCH_USERFAULTFD_WP
-	select PTE_MARKER
 
 	help
 	  Allows to create marker PTEs for userfaultfd write protection
