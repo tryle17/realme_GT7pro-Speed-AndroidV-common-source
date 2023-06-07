@@ -16,6 +16,7 @@
 *.bin
 *.bz2
 *.c.[012]*.*
+*.cover
 *.dt.yaml
 *.dtb
 *.dtbo
@@ -33,6 +34,7 @@
 *.lz4
 *.lzma
 *.lzo
+*.mbx
 *.mod
 *.mod.c
 *.o
@@ -76,6 +78,7 @@ modules.order
 # RPM spec file (make rpm-pkg)
 #
 /*.spec
+/rpmbuild/
 
 #
 # Debian directory (make deb-pkg)
@@ -100,6 +103,7 @@ modules.order
 !.get_maintainer.ignore
 !.gitattributes
 !.gitignore
+!.kunitconfig
 !.mailmap
 !.rustfmt.toml
 
