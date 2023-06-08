@@ -1057,7 +1057,7 @@ static void fl_set_key_pppoe(struct nlattr **tb,
 	 * because ETH_P_PPP_SES was stored in basic.n_proto
 	 * which might get overwritten by ppp_proto
 	 * or might be set to 0, the role of key_val::type
-	 * is simmilar to vlan_key::tpid
+	 * is similar to vlan_key::tpid
 	 */
 	key_val->type = htons(ETH_P_PPP_SES);
 	key_mask->type = cpu_to_be16(~0);
@@ -2200,8 +2200,9 @@ static int fl_change(struct net *net, struct sk_buff *in_skb,
 		fnew->flags = nla_get_u32(tb[TCA_FLOWER_FLAGS]);
 
 		if (!tc_flags_valid(fnew->flags)) {
+			kfree(fnew);
 			err = -EINVAL;
-			goto errout;
+			goto errout_tb;
 		}
 	}
 
@@ -2226,8 +2227,10 @@ static int fl_change(struct net *net, struct sk_buff *in_skb,
 		}
 		spin_unlock(&tp->lock);
 
-		if (err)
-			goto errout;
+		if (err) {
+			kfree(fnew);
+			goto errout_tb;
+		}
 	}
 	fnew->handle = handle;
 
@@ -2337,7 +2340,6 @@ errout_mask:
 	fl_mask_put(head, fnew->mask);
 errout_idr:
 	idr_remove(&head->handle_idr, fnew->handle);
-errout:
 	__fl_put(fnew);
 errout_tb:
 	kfree(tb);

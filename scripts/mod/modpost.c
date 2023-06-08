@@ -22,6 +22,7 @@
 #include <errno.h>
 #include "modpost.h"
 #include "../../include/linux/license.h"
+#include "../../include/linux/module_symbol.h"
 
 /* Are we using CONFIG_MODVERSIONS? */
 static bool modversions;
@@ -29,6 +30,8 @@ static bool modversions;
 static bool all_versions;
 /* If we are modposting external module set to 1 */
 static bool external_module;
+#define MODULE_SCMVERSION_SIZE 64
+static char module_scmversion[MODULE_SCMVERSION_SIZE];
 /* Only warn about unresolved symbols */
 static bool warn_unresolved;
 
@@ -1112,16 +1115,9 @@ static int secref_whitelist(const struct sectioncheck *mismatch,
 	return 1;
 }
 
-static inline int is_arm_mapping_symbol(const char *str)
-{
-	return str[0] == '$' &&
-	       (str[1] == 'a' || str[1] == 'd' || str[1] == 't' || str[1] == 'x')
-	       && (str[2] == '\0' || str[2] == '.');
-}
-
 /*
  * If there's no name there, ignore it; likewise, ignore it if it's
- * one of the magic symbols emitted used by current ARM tools.
+ * one of the magic symbols emitted used by current tools.
  *
  * Otherwise if find_symbols_between() returns those symbols, they'll
  * fail the whitelist tests and cause lots of false alarms ... fixable
@@ -1134,7 +1130,7 @@ static inline int is_valid_name(struct elf_info *elf, Elf_Sym *sym)
 
 	if (!name || !strlen(name))
 		return 0;
-	return !is_arm_mapping_symbol(name);
+	return !is_mapping_symbol(name);
 }
 
 /**
@@ -1733,7 +1729,7 @@ static void extract_crcs_for_object(const char *object, struct module *mod)
 		if (!isdigit(*p))
 			continue;	/* skip this line */
 
-		crc = strtol(p, &p, 0);
+		crc = strtoul(p, &p, 0);
 		if (*p != '\n')
 			continue;	/* skip this line */
 
@@ -2005,6 +2001,9 @@ static void add_header(struct buffer *b, struct module *mod)
 
 	if (!external_module)
 		buf_printf(b, "\nMODULE_INFO(intree, \"Y\");\n");
+
+	if (module_scmversion[0] != '\0')
+		buf_printf(b, "\nMODULE_INFO(scmversion, \"%s\");\n", module_scmversion);
 
 	buf_printf(b,
 		   "\n"
@@ -2334,7 +2333,7 @@ int main(int argc, char **argv)
 	LIST_HEAD(dump_lists);
 	struct dump_list *dl, *dl2;
 
-	while ((opt = getopt(argc, argv, "ei:mnT:o:awENd:")) != -1) {
+	while ((opt = getopt(argc, argv, "ei:mnT:o:awENd:v:")) != -1) {
 		switch (opt) {
 		case 'e':
 			external_module = true;
@@ -2370,6 +2369,9 @@ int main(int argc, char **argv)
 			break;
 		case 'd':
 			missing_namespace_deps = optarg;
+			break;
+		case 'v':
+			strncpy(module_scmversion, optarg, sizeof(module_scmversion) - 1);
 			break;
 		default:
 			exit(1);
