@@ -4,6 +4,7 @@ config MIPS
 	default y
 	select ARCH_32BIT_OFF_T if !64BIT
 	select ARCH_BINFMT_ELF_STATE if MIPS_FP_SUPPORT
+	select ARCH_HAS_CPU_FINALIZE_INIT
 	select ARCH_HAS_CURRENT_STACK_POINTER if !CC_IS_CLANG || CLANG_VERSION >= 140000
 	select ARCH_HAS_DEBUG_VIRTUAL if !64BIT
 	select ARCH_HAS_FORTIFY_SOURCE
@@ -79,6 +80,7 @@ config MIPS
 	select HAVE_LD_DEAD_CODE_DATA_ELIMINATION
 	select HAVE_MOD_ARCH_SPECIFIC
 	select HAVE_NMI
+	select HAVE_PATA_PLATFORM
 	select HAVE_PERF_EVENTS
 	select HAVE_PERF_REGS
 	select HAVE_PERF_USER_STACK_DUMP
@@ -2099,14 +2101,10 @@ endchoice
 
 config ARCH_FORCE_MAX_ORDER
 	int "Maximum zone order"
-	range 14 64 if MIPS_HUGE_TLB_SUPPORT && PAGE_SIZE_64KB
-	default "14" if MIPS_HUGE_TLB_SUPPORT && PAGE_SIZE_64KB
-	range 13 64 if MIPS_HUGE_TLB_SUPPORT && PAGE_SIZE_32KB
-	default "13" if MIPS_HUGE_TLB_SUPPORT && PAGE_SIZE_32KB
-	range 12 64 if MIPS_HUGE_TLB_SUPPORT && PAGE_SIZE_16KB
-	default "12" if MIPS_HUGE_TLB_SUPPORT && PAGE_SIZE_16KB
-	range 0 64
-	default "11"
+	default "13" if MIPS_HUGE_TLB_SUPPORT && PAGE_SIZE_64KB
+	default "12" if MIPS_HUGE_TLB_SUPPORT && PAGE_SIZE_32KB
+	default "11" if MIPS_HUGE_TLB_SUPPORT && PAGE_SIZE_16KB
+	default "10"
 	help
 	  The kernel memory allocator divides physically contiguous memory
 	  blocks into "zones", where each zone is a power of two number of
@@ -2114,9 +2112,6 @@ config ARCH_FORCE_MAX_ORDER
 	  keeps in the memory allocator.  If you need to allocate very large
 	  blocks of physically contiguous memory, then you may need to
 	  increase this value.
-
-	  This config option is actually maximum order plus one. For example,
-	  a value of 11 means that the largest free memory block is 2^10 pages.
 
 	  The page size is not necessarily 4KB.  Keep this in mind
 	  when choosing a value for this option.
@@ -2292,6 +2287,7 @@ config MIPS_CPS
 	select MIPS_CM
 	select MIPS_CPS_PM if HOTPLUG_CPU
 	select SMP
+	select HOTPLUG_CORE_SYNC_DEAD if HOTPLUG_CPU
 	select SYNC_R4K if (CEVT_R4K || CSRC_R4K)
 	select SYS_SUPPORTS_HOTPLUG_CPU
 	select SYS_SUPPORTS_SCHED_SMT if CPU_MIPSR6

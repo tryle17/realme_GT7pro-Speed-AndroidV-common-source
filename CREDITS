@@ -383,6 +383,12 @@ E: tomas@nocrew.org
 W: http://tomas.nocrew.org/
 D: dsp56k device driver
 
+N: Srivatsa S. Bhat
+E: srivatsa@csail.mit.edu
+D: Maintainer of Generic Paravirt-Ops subsystem
+D: Maintainer of VMware hypervisor interface
+D: Maintainer of VMware virtual PTP clock driver (ptp_vmw)
+
 N: Ross Biro
 E: ross.biro@gmail.com
 D: Original author of the Linux networking code
@@ -1706,6 +1712,10 @@ S: Panoramastrasse 18
 S: D-69126 Heidelberg
 S: Germany
 
+N: Neil Horman
+M: nhorman@tuxdriver.com
+D: SCTP protocol maintainer.
+
 N: Simon Horman
 M: horms@verge.net.au
 D: Renesas ARM/ARM64 SoC maintainer
@@ -2510,8 +2520,8 @@ D: XF86_8514
 D: cfdisk (curses based disk partitioning program)
 
 N: Mat Martineau
-E: mat@martineau.name
-D: MPTCP subsystem co-maintainer 2020-2023
+E: martineau@kernel.org
+D: MPTCP subsystem co-maintainer
 D: Keyctl restricted keyring and Diffie-Hellman UAPI
 D: Bluetooth L2CAP ERTM mode and AMP
 S: USA
