@@ -25,6 +25,7 @@
 #include <linux/spi/pxa2xx_spi.h>
 #include <linux/mtd/sharpsl.h>
 #include <linux/mtd/physmap.h>
+#include <linux/input-event-codes.h>
 #include <linux/input/matrix_keypad.h>
 #include <linux/regulator/machine.h>
 #include <linux/io.h>
@@ -1042,7 +1043,6 @@ MACHINE_START(SPITZ, "SHARP Spitz")
 	.map_io		= pxa27x_map_io,
 	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa27x_init_irq,
-	.handle_irq	= pxa27x_handle_irq,
 	.init_machine	= spitz_init,
 	.init_time	= pxa_timer_init,
 	.restart	= spitz_restart,
@@ -1055,7 +1055,6 @@ MACHINE_START(BORZOI, "SHARP Borzoi")
 	.map_io		= pxa27x_map_io,
 	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa27x_init_irq,
-	.handle_irq	= pxa27x_handle_irq,
 	.init_machine	= spitz_init,
 	.init_time	= pxa_timer_init,
 	.restart	= spitz_restart,
@@ -1068,7 +1067,6 @@ MACHINE_START(AKITA, "SHARP Akita")
 	.map_io		= pxa27x_map_io,
 	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa27x_init_irq,
-	.handle_irq	= pxa27x_handle_irq,
 	.init_machine	= spitz_init,
 	.init_time	= pxa_timer_init,
 	.restart	= spitz_restart,

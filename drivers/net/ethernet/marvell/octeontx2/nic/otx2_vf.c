@@ -297,9 +297,8 @@ static int otx2vf_vfaf_mbox_init(struct otx2_nic *vf)
 	int err;
 
 	mbox->pfvf = vf;
-	vf->mbox_wq = alloc_workqueue("otx2_vfaf_mailbox",
-				      WQ_UNBOUND | WQ_HIGHPRI |
-				      WQ_MEM_RECLAIM, 1);
+	vf->mbox_wq = alloc_ordered_workqueue("otx2_vfaf_mailbox",
+					      WQ_HIGHPRI | WQ_MEM_RECLAIM);
 	if (!vf->mbox_wq)
 		return -ENOMEM;
 
@@ -621,7 +620,7 @@ static int otx2vf_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	err = otx2vf_realloc_msix_vectors(vf);
 	if (err)
-		goto err_mbox_destroy;
+		goto err_detach_rsrc;
 
 	err = otx2_set_real_num_queues(netdev, qcount, qcount);
 	if (err)

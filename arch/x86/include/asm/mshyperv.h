@@ -228,7 +228,7 @@ int hv_unmap_ioapic_interrupt(int ioapic_id, struct hv_interrupt_entry *entry);
 void hv_ghcb_msr_write(u64 msr, u64 value);
 void hv_ghcb_msr_read(u64 msr, u64 *value);
 bool hv_ghcb_negotiate_protocol(void);
-void hv_ghcb_terminate(unsigned int set, unsigned int reason);
+void __noreturn hv_ghcb_terminate(unsigned int set, unsigned int reason);
 void hv_vtom_init(void);
 #else
 static inline void hv_ghcb_msr_write(u64 msr, u64 value) {}
@@ -256,6 +256,11 @@ u64 hv_get_register(unsigned int reg);
 void hv_set_register(unsigned int reg, u64 value);
 u64 hv_get_non_nested_register(unsigned int reg);
 void hv_set_non_nested_register(unsigned int reg, u64 value);
+
+static __always_inline u64 hv_raw_get_register(unsigned int reg)
+{
+	return __rdmsr(reg);
+}
 
 #else /* CONFIG_HYPERV */
 static inline void hyperv_init(void) {}
