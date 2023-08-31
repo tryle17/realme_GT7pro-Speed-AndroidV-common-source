@@ -6,13 +6,14 @@ load("//build/bazel_common_rules/dist:dist.bzl", "copy_to_dist_dir")
 load("//build/kernel/kleaf:common_kernels.bzl", "define_common_kernels")
 load(
     "//build/kernel/kleaf:kernel.bzl",
+    "checkpatch",
     "ddk_headers",
     "kernel_build",
     "kernel_images",
     "kernel_modules_install",
     "merged_kernel_uapi_headers",
 )
-load(":modules.bzl", "COMMON_GKI_MODULES_LIST")
+load(":modules.bzl", "get_gki_modules_list")
 
 package(
     default_visibility = [
@@ -39,10 +40,54 @@ _GKI_X86_64_MAKE_GOALS = [
     "modules",
 ]
 
-write_file(
+checkpatch(
+    name = "checkpatch",
+    checkpatch_pl = "scripts/checkpatch.pl",
+)
+
+# Deprecated - Use arch specific files from below.
+alias(
     name = "gki_system_dlkm_modules",
-    out = "android/gki_system_dlkm_modules",
-    content = COMMON_GKI_MODULES_LIST + [
+    actual = "gki_system_dlkm_modules_arm64",
+    deprecation = """
+    Common list for all architectures is deprecated.
+    Instead use the file corresponding to the architecture used:
+    i.e. `gki_system_dlkm_modules_{arch}`
+    """,
+)
+
+alias(
+    name = "android/gki_system_dlkm_modules",
+    actual = "android/gki_system_dlkm_modules_arm64",
+    deprecation = """
+    Common list for all architectures is deprecated.
+    Instead use the file corresponding to the architecture used:
+    i.e. `gki_system_dlkm_modules_{arch}`
+    """,
+)
+
+write_file(
+    name = "gki_system_dlkm_modules_arm64",
+    out = "android/gki_system_dlkm_modules_arm64",
+    content = get_gki_modules_list("arm64") + [
+        # Ensure new line at the end.
+        "",
+    ],
+)
+
+write_file(
+    name = "gki_system_dlkm_modules_x86_64",
+    out = "android/gki_system_dlkm_modules_x86_64",
+    content = get_gki_modules_list("x86_64") + [
+        # Ensure new line at the end.
+        "",
+    ],
+)
+
+write_file(
+    name = "gki_system_dlkm_modules_risc64",
+    out = "android/gki_system_dlkm_modules_riscv64",
+    content = get_gki_modules_list("riscv64") + [
         # Ensure new line at the end.
         "",
     ],
@@ -50,16 +95,16 @@ write_file(
 
 define_common_kernels(target_configs = {
     "kernel_aarch64": {
-        "module_implicit_outs": COMMON_GKI_MODULES_LIST,
+        "module_implicit_outs": get_gki_modules_list("arm64"),
         "make_goals": _GKI_AARCH64_MAKE_GOALS,
     },
     "kernel_riscv64": {
-        "module_implicit_outs": COMMON_GKI_MODULES_LIST,
+        "module_implicit_outs": get_gki_modules_list("riscv64"),
         "make_goals": _GKI_RISCV64_MAKE_GOALS,
     },
     "kernel_x86_64": {
         "kmi_symbol_list_strict_mode": False,
-        "module_implicit_outs": COMMON_GKI_MODULES_LIST,
+        "module_implicit_outs": get_gki_modules_list("x86_64"),
         "make_goals": _GKI_X86_64_MAKE_GOALS,
     },
 })
@@ -185,6 +230,7 @@ _DB845C_MODULE_OUTS = [
     "drivers/soc/qcom/mdt_loader.ko",
     "drivers/soc/qcom/pdr_interface.ko",
     "drivers/soc/qcom/qcom_aoss.ko",
+    "drivers/soc/qcom/qcom_ice.ko",
     "drivers/soc/qcom/qcom_rpmh.ko",
     "drivers/soc/qcom/qmi_helpers.ko",
     "drivers/soc/qcom/rmtfs_mem.ko",
@@ -206,7 +252,7 @@ _DB845C_MODULE_OUTS = [
     "drivers/thermal/qcom/qcom-spmi-temp-alarm.ko",
     "drivers/thermal/qcom/qcom_tsens.ko",
     "drivers/tty/serial/msm_serial.ko",
-    "drivers/ufs/host/ufs_qcom.ko",
+    "drivers/ufs/host/ufs-qcom.ko",
     "drivers/usb/common/ulpi.ko",
     "drivers/usb/host/ohci-hcd.ko",
     "drivers/usb/host/ohci-pci.ko",
@@ -356,7 +402,8 @@ _ROCKPI4_MODULE_OUTS = [
     "drivers/iio/adc/rockchip_saradc.ko",
     "drivers/iio/buffer/industrialio-triggered-buffer.ko",
     "drivers/iio/buffer/kfifo_buf.ko",
-    "drivers/mfd/rk808.ko",
+    "drivers/mfd/rk8xx-i2c.ko",
+    "drivers/mfd/rk8xx-spi.ko",
     "drivers/mmc/core/pwrseq_simple.ko",
     "drivers/mmc/host/cqhci.ko",
     "drivers/mmc/host/dw_mmc.ko",
@@ -413,7 +460,7 @@ kernel_build(
         "modules",
         "rk3399-rock-pi-4b.dtb",
     ],
-    module_outs = COMMON_GKI_MODULES_LIST + _ROCKPI4_MODULE_OUTS + _ROCKPI4_WATCHDOG_MODULE_OUTS,
+    module_outs = get_gki_modules_list("arm64") + _ROCKPI4_MODULE_OUTS + _ROCKPI4_WATCHDOG_MODULE_OUTS,
     visibility = ["//visibility:private"],
 )
 
@@ -436,7 +483,7 @@ kernel_build(
         "modules",
         "rk3399-rock-pi-4b.dtb",
     ],
-    module_outs = COMMON_GKI_MODULES_LIST + _ROCKPI4_MODULE_OUTS,
+    module_outs = get_gki_modules_list("arm64") + _ROCKPI4_MODULE_OUTS,
     visibility = ["//visibility:private"],
 )
 
