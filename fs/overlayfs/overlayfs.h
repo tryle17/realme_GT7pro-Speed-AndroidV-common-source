@@ -70,14 +70,6 @@ enum {
 	OVL_XINO_ON,
 };
 
-/* The set of options that user requested explicitly via mount options */
-struct ovl_opt_set {
-	bool metacopy;
-	bool redirect;
-	bool nfs_export;
-	bool index;
-};
-
 /*
  * The tuple (fh,uuid) is a universal unique identifier for a copy up origin,
  * where:
@@ -368,35 +360,12 @@ static inline bool ovl_open_flags_need_copy_up(int flags)
 	return ((OPEN_FMODE(flags) & FMODE_WRITE) || (flags & O_TRUNC));
 }
 
-
-/* params.c */
-#define OVL_MAX_STACK 500
-
-struct ovl_fs_context_layer {
-	char *name;
-	struct path path;
-};
-
-struct ovl_fs_context {
-	struct path upper;
-	struct path work;
-	size_t capacity;
-	size_t nr; /* includes nr_data */
-	size_t nr_data;
-	struct ovl_opt_set set;
-	struct ovl_fs_context_layer *lower;
-};
-
-int ovl_parse_param_upperdir(const char *name, struct fs_context *fc,
-			     bool workdir);
-int ovl_parse_param_lowerdir(const char *name, struct fs_context *fc);
-void ovl_parse_param_drop_lowerdir(struct ovl_fs_context *ctx);
-
 /* util.c */
 int ovl_want_write(struct dentry *dentry);
 void ovl_drop_write(struct dentry *dentry);
 struct dentry *ovl_workdir(struct dentry *dentry);
 const struct cred *ovl_override_creds(struct super_block *sb);
+void ovl_revert_creds(struct super_block *sb, const struct cred *oldcred);
 int ovl_can_decode_fh(struct super_block *sb);
 struct dentry *ovl_indexdir(struct super_block *sb);
 bool ovl_index_all(struct super_block *sb);
@@ -697,7 +666,7 @@ static inline struct posix_acl *ovl_get_acl_path(const struct path *path,
 }
 #endif
 
-int ovl_update_time(struct inode *inode, struct timespec64 *ts, int flags);
+int ovl_update_time(struct inode *inode, int flags);
 bool ovl_is_private_xattr(struct super_block *sb, const char *name);
 
 struct ovl_inode_params {
@@ -791,3 +760,12 @@ int ovl_set_origin(struct ovl_fs *ofs, struct dentry *lower,
 
 /* export.c */
 extern const struct export_operations ovl_export_operations;
+
+/* super.c */
+int ovl_fill_super(struct super_block *sb, struct fs_context *fc);
+
+/* Will this overlay be forced to mount/remount ro? */
+static inline bool ovl_force_readonly(struct ovl_fs *ofs)
+{
+	return (!ovl_upper_mnt(ofs) || !ofs->workdir);
+}

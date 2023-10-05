@@ -1200,7 +1200,7 @@ config WQ_CPU_INTENSIVE_REPORT
 	help
 	  Say Y here to enable reporting of concurrency-managed per-cpu work
 	  items that hog CPUs for longer than
-	  workqueue.cpu_intensive_threshold_us. Workqueue automatically
+	  workqueue.cpu_intensive_thresh_us. Workqueue automatically
 	  detects and excludes them from concurrency management to prevent
 	  them from stalling other per-cpu work items. Occassional
 	  triggering may not necessarily indicate a problem. Repeated
@@ -1673,10 +1673,15 @@ menu "Debug kernel data structures"
 
 config DEBUG_LIST
 	bool "Debug linked list manipulation"
-	depends on DEBUG_KERNEL || BUG_ON_DATA_CORRUPTION
+	depends on DEBUG_KERNEL
+	select LIST_HARDENED
 	help
-	  Enable this to turn on extended checks in the linked-list
-	  walking routines.
+	  Enable this to turn on extended checks in the linked-list walking
+	  routines.
+
+	  This option trades better quality error reports for performance, and
+	  is more suitable for kernel debugging. If you care about performance,
+	  you should only enable CONFIG_LIST_HARDENED instead.
 
 	  If unsure, say N.
 
@@ -1709,16 +1714,6 @@ config DEBUG_NOTIFIERS
 	  modules properly unregister themselves from notifier chains.
 	  This is a relatively cheap check but if you care about maximum
 	  performance, say N.
-
-config BUG_ON_DATA_CORRUPTION
-	bool "Trigger a BUG when data corruption is detected"
-	select DEBUG_LIST
-	help
-	  Select this option if the kernel should BUG when it encounters
-	  data corruption in kernel memory structures when they get checked
-	  for validity.
-
-	  If unsure, say N.
 
 config DEBUG_MAPLE_TREE
 	bool "Debug maple trees"
@@ -2739,7 +2734,7 @@ config STACKINIT_KUNIT_TEST
 
 config FORTIFY_KUNIT_TEST
 	tristate "Test fortified str*() and mem*() function internals at runtime" if !KUNIT_ALL_TESTS
-	depends on KUNIT
+	depends on KUNIT && FORTIFY_SOURCE
 	default KUNIT_ALL_TESTS
 	help
 	  Builds unit tests for checking internals of FORTIFY_SOURCE as used

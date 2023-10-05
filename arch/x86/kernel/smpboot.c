@@ -327,14 +327,6 @@ static void notrace start_secondary(void *unused)
 }
 
 /**
- * topology_smt_supported - Check whether SMT is supported by the CPUs
- */
-bool topology_smt_supported(void)
-{
-	return smp_num_siblings > 1;
-}
-
-/**
  * topology_phys_to_logical_pkg - Map a physical package id to a logical
  * @phys_pkg:	The physical package id to map
  *
@@ -1346,6 +1338,14 @@ bool smp_park_other_cpus_in_init(void)
 	unsigned int apicid;
 
 	if (apic->wakeup_secondary_cpu_64 || apic->wakeup_secondary_cpu)
+		return false;
+
+	/*
+	 * If this is a crash stop which does not execute on the boot CPU,
+	 * then this cannot use the INIT mechanism because INIT to the boot
+	 * CPU will reset the machine.
+	 */
+	if (this_cpu)
 		return false;
 
 	for_each_present_cpu(cpu) {

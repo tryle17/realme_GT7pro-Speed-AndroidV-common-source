@@ -101,10 +101,11 @@ static const struct inode_operations incfs_dir_inode_ops = {
 	.setattr = incfs_setattr,
 };
 
+WRAP_DIR_ITER(iterate_incfs_dir) // FIXME!
 static const struct file_operations incfs_dir_fops = {
 	.llseek = generic_file_llseek,
 	.read = generic_read_dir,
-	.iterate = iterate_incfs_dir,
+	.iterate_shared	= shared_iterate_incfs_dir,
 	.open = file_open,
 	.release = file_release,
 };
@@ -359,7 +360,7 @@ static int inode_set(struct inode *inode, void *opaque)
 	ihold(backing_inode);
 	node->n_backing_inode = backing_inode;
 	node->n_mount_info = get_mount_info(inode->i_sb);
-	inode->i_ctime = backing_inode->i_ctime;
+	inode_set_ctime_to_ts(inode, inode_get_ctime(backing_inode));
 	inode->i_mtime = backing_inode->i_mtime;
 	inode->i_atime = backing_inode->i_atime;
 	inode->i_ino = backing_inode->i_ino;
@@ -1669,7 +1670,7 @@ static int incfs_getattr(struct mnt_idmap *idmap, const struct path *path,
 {
 	struct inode *inode = d_inode(path->dentry);
 
-	generic_fillattr(idmap, inode, stat);
+	generic_fillattr(idmap, request_mask, inode, stat);
 
 	if (inode->i_ino < INCFS_START_INO_RANGE)
 		return 0;
