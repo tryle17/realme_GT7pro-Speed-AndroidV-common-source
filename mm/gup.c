@@ -597,7 +597,7 @@ static struct page *follow_page_pte(struct vm_area_struct *vma,
 	pte = ptep_get(ptep);
 	if (!pte_present(pte))
 		goto no_page;
-	if (pte_protnone(pte) && !gup_can_follow_protnone(flags))
+	if (pte_protnone(pte) && !gup_can_follow_protnone(vma, flags))
 		goto no_page;
 
 	page = vm_normal_page(vma, address, pte);
@@ -714,7 +714,7 @@ static struct page *follow_pmd_mask(struct vm_area_struct *vma,
 	if (likely(!pmd_trans_huge(pmdval)))
 		return follow_page_pte(vma, address, pmd, flags, &ctx->pgmap);
 
-	if (pmd_protnone(pmdval) && !gup_can_follow_protnone(flags))
+	if (pmd_protnone(pmdval) && !gup_can_follow_protnone(vma, flags))
 		return no_page_table(vma, flags);
 
 	ptl = pmd_lock(mm, pmd);
@@ -851,6 +851,10 @@ struct page *follow_page(struct vm_area_struct *vma, unsigned long address,
 	if (WARN_ON_ONCE(foll_flags & FOLL_PIN))
 		return NULL;
 
+	/*
+	 * We never set FOLL_HONOR_NUMA_FAULT because callers don't expect
+	 * to fail on PROT_NONE-mapped pages.
+	 */
 	page = follow_page_mask(vma, address, foll_flags, &ctx);
 	if (ctx.pgmap)
 		put_dev_pagemap(ctx.pgmap);
@@ -1091,6 +1095,45 @@ static int check_vma_flags(struct vm_area_struct *vma, unsigned long gup_flags)
 	return 0;
 }
 
+/*
+ * This is "vma_lookup()", but with a warning if we would have
+ * historically expanded the stack in the GUP code.
+ */
+static struct vm_area_struct *gup_vma_lookup(struct mm_struct *mm,
+	 unsigned long addr)
+{
+#ifdef CONFIG_STACK_GROWSUP
+	return vma_lookup(mm, addr);
+#else
+	static volatile unsigned long next_warn;
+	struct vm_area_struct *vma;
+	unsigned long now, next;
+
+	vma = find_vma(mm, addr);
+	if (!vma || (addr >= vma->vm_start))
+		return vma;
+
+	/* Only warn for half-way relevant accesses */
+	if (!(vma->vm_flags & VM_GROWSDOWN))
+		return NULL;
+	if (vma->vm_start - addr > 65536)
+		return NULL;
+
+	/* Let's not warn more than once an hour.. */
+	now = jiffies; next = next_warn;
+	if (next && time_before(now, next))
+		return NULL;
+	next_warn = now + 60*60*HZ;
+
+	/* Let people know things may have changed. */
+	pr_warn("GUP no longer grows the stack in %s (%d): %lx-%lx (%lx)\n",
+		current->comm, task_pid_nr(current),
+		vma->vm_start, vma->vm_end, addr);
+	dump_stack();
+	return NULL;
+#endif
+}
+
 /**
  * __get_user_pages() - pin user pages in memory
  * @mm:		mm_struct of target mm
@@ -1168,11 +1211,7 @@ static long __get_user_pages(struct mm_struct *mm,
 
 		/* first iteration or cross vma bound */
 		if (!vma || start >= vma->vm_end) {
-			vma = find_vma(mm, start);
-			if (vma && (start < vma->vm_start)) {
-				WARN_ON_ONCE(vma->vm_flags & VM_GROWSDOWN);
-				vma = NULL;
-			}
+			vma = gup_vma_lookup(mm, start);
 			if (!vma && in_gate_area(mm, start)) {
 				ret = get_gate_page(mm, start & PAGE_MASK,
 						gup_flags, &vma,
@@ -1337,13 +1376,9 @@ int fixup_user_fault(struct mm_struct *mm,
 		fault_flags |= FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
 
 retry:
-	vma = find_vma(mm, address);
+	vma = gup_vma_lookup(mm, address);
 	if (!vma)
 		return -EFAULT;
-	if (address < vma->vm_start ) {
-		WARN_ON_ONCE(vma->vm_flags & VM_GROWSDOWN);
-		return -EFAULT;
-	}
 
 	if (!vma_permits_fault(vma, fault_flags))
 		return -EFAULT;
@@ -2196,6 +2231,13 @@ static bool is_valid_gup_args(struct page **pages, int *locked,
 		gup_flags |= FOLL_UNLOCKABLE;
 	}
 
+	/*
+	 * For now, always trigger NUMA hinting faults. Some GUP users like
+	 * KVM require the hint to be as the calling context of GUP is
+	 * functionally similar to a memory reference from task context.
+	 */
+	gup_flags |= FOLL_HONOR_NUMA_FAULT;
+
 	/* FOLL_GET and FOLL_PIN are mutually exclusive. */
 	if (WARN_ON_ONCE((gup_flags & (FOLL_PIN | FOLL_GET)) ==
 			 (FOLL_PIN | FOLL_GET)))
@@ -2520,7 +2562,14 @@ static int gup_pte_range(pmd_t pmd, pmd_t *pmdp, unsigned long addr,
 		struct page *page;
 		struct folio *folio;
 
-		if (pte_protnone(pte) && !gup_can_follow_protnone(flags))
+		/*
+		 * Always fallback to ordinary GUP on PROT_NONE-mapped pages:
+		 * pte_access_permitted() better should reject these pages
+		 * either way: otherwise, GUP-fast might succeed in
+		 * cases where ordinary GUP would fail due to VMA access
+		 * permissions.
+		 */
+		if (pte_protnone(pte))
 			goto pte_unmap;
 
 		if (!pte_access_permitted(pte, flags & FOLL_WRITE))
@@ -2939,8 +2988,8 @@ static int gup_pmd_range(pud_t *pudp, pud_t pud, unsigned long addr, unsigned lo
 
 		if (unlikely(pmd_trans_huge(pmd) || pmd_huge(pmd) ||
 			     pmd_devmap(pmd))) {
-			if (pmd_protnone(pmd) &&
-			    !gup_can_follow_protnone(flags))
+			/* See gup_pte_range() */
+			if (pmd_protnone(pmd))
 				return 0;
 
 			if (!gup_huge_pmd(pmd, pmdp, addr, next, flags,
@@ -3120,7 +3169,7 @@ static int internal_get_user_pages_fast(unsigned long start,
 	if (WARN_ON_ONCE(gup_flags & ~(FOLL_WRITE | FOLL_LONGTERM |
 				       FOLL_FORCE | FOLL_PIN | FOLL_GET |
 				       FOLL_FAST_ONLY | FOLL_NOFAULT |
-				       FOLL_PCI_P2PDMA)))
+				       FOLL_PCI_P2PDMA | FOLL_HONOR_NUMA_FAULT)))
 		return -EINVAL;
 
 	if (gup_flags & FOLL_PIN)
