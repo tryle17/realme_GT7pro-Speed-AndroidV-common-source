@@ -1436,8 +1436,9 @@ static int nbd_start_device_ioctl(struct nbd_device *nbd)
 
 static void nbd_clear_sock_ioctl(struct nbd_device *nbd)
 {
-	blk_mark_disk_dead(nbd->disk);
 	nbd_clear_sock(nbd);
+	disk_force_media_change(nbd->disk);
+	nbd_bdev_reset(nbd);
 	if (test_and_clear_bit(NBD_RT_HAS_CONFIG_REF,
 			       &nbd->config->runtime_flags))
 		nbd_config_put(nbd);
@@ -2334,6 +2335,7 @@ static struct genl_family nbd_genl_family __ro_after_init = {
 	.mcgrps		= nbd_mcast_grps,
 	.n_mcgrps	= ARRAY_SIZE(nbd_mcast_grps),
 };
+MODULE_ALIAS_GENL_FAMILY(NBD_GENL_FAMILY_NAME);
 
 static int populate_nbd_status(struct nbd_device *nbd, struct sk_buff *reply)
 {
