@@ -2809,6 +2809,7 @@ out:
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(xhci_stop_endpoint_sync);
 
 /* Issue a configure endpoint command or evaluate context command
  * and wait for it to finish.
