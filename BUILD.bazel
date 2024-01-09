@@ -2171,3 +2171,7 @@ zip_archive(
     srcs = [":kselftest_tests_arm64"],
     out = "tests.zip",
 )
+
+load(":consolidate.bzl", "define_consolidate")
+
+define_consolidate()

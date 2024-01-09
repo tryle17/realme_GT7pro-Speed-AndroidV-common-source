@@ -18,6 +18,7 @@
 #include <trace/hooks/printk.h>
 #include <trace/hooks/epoch.h>
 #include <trace/hooks/cpufreq.h>
+#include <trace/hooks/ftrace_dump.h>
 #include <trace/hooks/ufshcd.h>
 #include <trace/hooks/cgroup.h>
 #include <trace/hooks/sys.h>
@@ -33,6 +34,7 @@
 #include <trace/hooks/gic_v3.h>
 #include <trace/hooks/remoteproc.h>
 #include <trace/hooks/timer.h>
+#include <trace/hooks/hung_task.h>
 #include <trace/hooks/fpsimd.h>
 #include <trace/hooks/mm.h>
 #include <trace/hooks/dtask.h>
@@ -59,6 +61,11 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_cpufreq_fast_switch);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_cpufreq_target);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_rvh_cpu_cgroup_attach);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_rvh_cpu_cgroup_online);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_ftrace_oops_enter);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_ftrace_oops_exit);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_ftrace_size_check);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_ftrace_format_check);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_ftrace_dump_buffer);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_ufs_fill_prdt);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_ufs_prepare_command);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_ufs_update_sysfs);
@@ -86,12 +93,16 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(android_rvh_selinux_avc_lookup);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_rvh_selinux_is_initialized);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_check_mmap_file);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_check_file_open);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_gic_v3_suspend);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_gic_set_affinity);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_gic_v3_affinity_init);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_check_bpf_syscall);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_rproc_recovery);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_rproc_recovery_set);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_timer_calc_index);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_check_uninterruptible_tasks);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_check_uninterruptible_tasks_dn);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_rvh_gic_v3_set_affinity);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_is_fpsimd_save);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_slab_folio_alloced);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_kmalloc_large_alloced);
