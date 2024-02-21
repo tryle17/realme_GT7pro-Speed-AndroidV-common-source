@@ -2176,6 +2176,3 @@ zip_archive(
     out = "tests.zip",
 )
 
-load(":consolidate.bzl", "define_consolidate")
-
-define_consolidate()
