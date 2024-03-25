@@ -28,8 +28,10 @@
 #include <linux/sched.h>
 #include <linux/pgtable.h>
 #include <linux/kasan.h>
+#include <linux/page_pinner.h>
 #include <linux/memremap.h>
 #include <linux/slab.h>
+#include <linux/android_kabi.h>
 
 struct mempolicy;
 struct anon_vma;
@@ -85,13 +87,13 @@ extern int sysctl_legacy_va_layout;
 #endif
 
 #ifdef CONFIG_HAVE_ARCH_MMAP_RND_BITS
-extern const int mmap_rnd_bits_min;
-extern const int mmap_rnd_bits_max;
+extern int mmap_rnd_bits_min __read_mostly;
+extern int mmap_rnd_bits_max __read_mostly;
 extern int mmap_rnd_bits __read_mostly;
 #endif
 #ifdef CONFIG_HAVE_ARCH_MMAP_RND_COMPAT_BITS
-extern const int mmap_rnd_compat_bits_min;
-extern const int mmap_rnd_compat_bits_max;
+extern int mmap_rnd_compat_bits_min __read_mostly;
+extern int mmap_rnd_compat_bits_max __read_mostly;
 extern int mmap_rnd_compat_bits __read_mostly;
 #endif
 
@@ -628,6 +630,11 @@ struct vm_operations_struct {
 	 */
 	struct page *(*find_special_page)(struct vm_area_struct *vma,
 					  unsigned long addr);
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 #ifdef CONFIG_NUMA_BALANCING
@@ -1092,8 +1099,13 @@ static inline unsigned int folio_order(struct folio *folio)
  */
 static inline int put_page_testzero(struct page *page)
 {
+	int ret;
+
 	VM_BUG_ON_PAGE(page_ref_count(page) == 0, page);
-	return page_ref_dec_and_test(page);
+	ret = page_ref_dec_and_test(page);
+	page_pinner_put_page(page);
+
+	return ret;
 }
 
 static inline int folio_put_testzero(struct folio *folio)

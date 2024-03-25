@@ -76,6 +76,7 @@
 
 #include "binder_internal.h"
 #include "binder_trace.h"
+#include "binder_pick_impl.h"
 #include <trace/hooks/binder.h>
 
 static HLIST_HEAD(binder_deferred_list);
@@ -3181,6 +3182,7 @@ static void binder_transaction(struct binder_proc *proc,
 		target_proc = target_thread->proc;
 		target_proc->tmp_ref++;
 		binder_inner_proc_unlock(target_thread->proc);
+		trace_android_vh_binder_reply(target_proc, proc, thread, tr);
 	} else {
 		if (tr->target.handle) {
 			struct binder_ref *ref;
@@ -3243,6 +3245,7 @@ static void binder_transaction(struct binder_proc *proc,
 			return_error_line = __LINE__;
 			goto err_invalid_target_handle;
 		}
+		trace_android_vh_binder_trans(target_proc, proc, thread, tr);
 		if (security_binder_transaction(proc->cred,
 						target_proc->cred) < 0) {
 			binder_txn_error("%d:%d transaction credentials failed\n",
@@ -5869,7 +5872,7 @@ static int binder_open(struct inode *nodp, struct file *filp)
 	}
 	hlist_add_head(&proc->proc_node, &binder_procs);
 	mutex_unlock(&binder_procs_lock);
-
+	trace_android_vh_binder_preset(&binder_procs, &binder_procs_lock);
 	if (binder_debugfs_dir_entry_proc && !existing_pid) {
 		char strbuf[11];
 
@@ -6763,49 +6766,6 @@ static int __init init_binder_device(const char *name)
 
 	return ret;
 }
-
-bool binder_use_rust;
-bool binder_driver_initialized;
-
-static int binder_param_set(const char *buffer, const struct kernel_param *kp)
-{
-	if (binder_driver_initialized)
-		return -EOPNOTSUPP;
-
-	if (!strcmp(buffer, "rust"))
-		binder_use_rust = true;
-	else if (!strcmp(buffer, "c"))
-		binder_use_rust = false;
-	else
-		return -EINVAL;
-
-	return 0;
-}
-
-static int binder_param_get(char *buffer, const struct kernel_param *kp)
-{
-	// The kernel_param_ops buffer is 4k bytes, so this will not overflow.
-	if (binder_use_rust) {
-		buffer[0] = 'r';
-		buffer[1] = 'u';
-		buffer[2] = 's';
-		buffer[3] = 't';
-		buffer[4] = '\n';
-		buffer[5] = 0;
-	} else {
-		buffer[0] = 'c';
-		buffer[1] = '\n';
-		buffer[2] = 0;
-	}
-	return strlen(buffer);
-}
-
-static const struct kernel_param_ops binder_param_ops = {
-	.set = binder_param_set,
-	.get = binder_param_get,
-};
-
-module_param_cb(impl, &binder_param_ops, NULL, 0444);
 
 static int __init binder_init(void)
 {
