@@ -21,21 +21,12 @@ DECLARE_HOOK(android_vh_binder_set_priority,
 DECLARE_HOOK(android_vh_binder_restore_priority,
 	TP_PROTO(struct binder_transaction *t, struct task_struct *task),
 	TP_ARGS(t, task));
-struct binder_proc;
-struct binder_thread;
-DECLARE_HOOK(android_vh_binder_wakeup_ilocked,
-	TP_PROTO(struct task_struct *task, bool sync, struct binder_proc *proc),
-	TP_ARGS(task, sync, proc));
-DECLARE_HOOK(android_vh_binder_wait_for_work,
-	TP_PROTO(bool do_proc_work, struct binder_thread *tsk, struct binder_proc *proc),
-	TP_ARGS(do_proc_work, tsk, proc));
-DECLARE_HOOK(android_vh_sync_txn_recvd,
-	TP_PROTO(struct task_struct *tsk, struct task_struct *from),
-	TP_ARGS(tsk, from));
 
 DECLARE_HOOK(android_vh_binder_alloc_new_buf_locked,
 	TP_PROTO(size_t size, size_t *free_async_space, int is_async, bool *should_fail),
 	TP_ARGS(size, free_async_space, is_async, should_fail));
+struct binder_proc;
+struct binder_thread;
 DECLARE_HOOK(android_vh_binder_preset,
 	TP_PROTO(struct hlist_head *hhead, struct mutex *lock),
 	TP_ARGS(hhead, lock));
