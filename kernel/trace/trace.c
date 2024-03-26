@@ -10263,8 +10263,6 @@ void ftrace_dump(enum ftrace_dump_mode oops_dump_mode)
 	 */
 
 	while (!trace_empty(&iter)) {
-		ftrace_check = true;
-
 		if (!cnt)
 			printk(KERN_TRACE "---------------------------------\n");
 
