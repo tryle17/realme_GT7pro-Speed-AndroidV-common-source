@@ -99,9 +99,12 @@
   __traceiter_android_vh_account_process_tick_gran
   __traceiter_android_vh_alloc_oem_binder_struct
   __traceiter_android_vh_binder_buffer_release
+  __traceiter_android_vh_binder_del_ref
   __traceiter_android_vh_binder_has_special_work_ilocked
   __traceiter_android_vh_binder_ioctl_end
   __traceiter_android_vh_binder_looper_exited
+  __traceiter_android_vh_binder_new_ref
+  __traceiter_android_vh_binder_proc_transaction
   __traceiter_android_vh_binder_proc_transaction_finish
   __traceiter_android_vh_binder_select_special_worklist
   __traceiter_android_vh_binder_spawn_new_thread
@@ -114,6 +117,7 @@
   __traceiter_android_vh_dup_task_struct
   __traceiter_android_vh_exit_signal
   __traceiter_android_vh_irqtime_account_process_tick
+  __traceiter_android_vh_kmalloc_slab
   __traceiter_android_vh_free_oem_binder_struct
   __traceiter_android_vh_rwsem_downgrade_wake_finish
   __traceiter_android_vh_map_util_freq
@@ -132,6 +136,12 @@
   __traceiter_android_vh_look_around
   __traceiter_android_vh_look_around_migrate_folio
   __traceiter_mm_vmscan_kswapd_wake
+  __traceiter_block_bio_queue
+  __traceiter_block_getrq
+  __traceiter_block_rq_complete
+  __traceiter_block_rq_issue
+  __traceiter_block_rq_merge
+  __traceiter_block_rq_requeue
   __traceiter_sched_stat_blocked
   __traceiter_sched_stat_iowait
   __traceiter_sched_stat_runtime
@@ -144,9 +154,12 @@
   __tracepoint_android_vh_account_process_tick_gran
   __tracepoint_android_vh_alloc_oem_binder_struct
   __tracepoint_android_vh_binder_buffer_release
+  __tracepoint_android_vh_binder_del_ref
   __tracepoint_android_vh_binder_has_special_work_ilocked
   __tracepoint_android_vh_binder_ioctl_end
   __tracepoint_android_vh_binder_looper_exited
+  __tracepoint_android_vh_binder_new_ref
+  __tracepoint_android_vh_binder_proc_transaction
   __tracepoint_android_vh_binder_proc_transaction_finish
   __tracepoint_android_vh_binder_select_special_worklist
   __tracepoint_android_vh_binder_spawn_new_thread
@@ -159,6 +172,7 @@
   __tracepoint_android_vh_exit_signal
   __tracepoint_android_vh_do_shrink_slab
   __tracepoint_android_vh_irqtime_account_process_tick
+  __tracepoint_android_vh_kmalloc_slab
   __tracepoint_android_vh_free_oem_binder_struct
   __tracepoint_android_vh_rwsem_downgrade_wake_finish
   __tracepoint_android_vh_map_util_freq
@@ -179,6 +193,12 @@
   __tracepoint_android_vh_adjust_alloc_flags
   __tracepoint_android_vh_test_clear_look_around_ref
   __tracepoint_mm_vmscan_kswapd_wake
+  __tracepoint_block_bio_queue
+  __tracepoint_block_getrq
+  __tracepoint_block_rq_complete
+  __tracepoint_block_rq_issue
+  __tracepoint_block_rq_merge
+  __tracepoint_block_rq_requeue
   __tracepoint_sched_stat_blocked
   __tracepoint_sched_stat_iowait
   __tracepoint_sched_stat_sleep
