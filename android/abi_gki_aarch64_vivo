@@ -45,6 +45,7 @@
   __traceiter_android_vh_record_rwsem_reader_owned
   __traceiter_android_vh_record_rwsem_writer_owned
   __traceiter_android_vh_rwsem_init
+  __traceiter_android_vh_rwsem_read_trylock_failed
   __traceiter_android_vh_rwsem_read_wait_finish
   __traceiter_android_vh_rwsem_read_wait_start
   __traceiter_android_vh_rwsem_wake
@@ -52,6 +53,8 @@
   __traceiter_android_vh_rwsem_write_wait_finish
   __traceiter_android_vh_rwsem_write_wait_start
   __traceiter_android_vh_scheduler_tick
+  __traceiter_android_vh_sd_init_unmap_multi_segment
+  __traceiter_android_vh_sd_setup_unmap_multi_segment
   __traceiter_android_vh_sync_txn_recvd
   __traceiter_android_vh_test_clear_look_around_ref
   __traceiter_android_vh_try_to_unmap_one
@@ -91,6 +94,7 @@
   __tracepoint_android_vh_record_rwsem_reader_owned
   __tracepoint_android_vh_record_rwsem_writer_owned
   __tracepoint_android_vh_rwsem_init
+  __tracepoint_android_vh_rwsem_read_trylock_failed
   __tracepoint_android_vh_rwsem_read_wait_finish
   __tracepoint_android_vh_rwsem_read_wait_start
   __tracepoint_android_vh_rwsem_wake
@@ -98,6 +102,8 @@
   __tracepoint_android_vh_rwsem_write_wait_finish
   __tracepoint_android_vh_rwsem_write_wait_start
   __tracepoint_android_vh_scheduler_tick
+  __tracepoint_android_vh_sd_init_unmap_multi_segment
+  __tracepoint_android_vh_sd_setup_unmap_multi_segment
   __tracepoint_android_vh_sync_txn_recvd
   __tracepoint_android_vh_test_clear_look_around_ref
   __tracepoint_android_vh_try_to_unmap_one
