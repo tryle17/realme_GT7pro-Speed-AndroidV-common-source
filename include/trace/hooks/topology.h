@@ -24,7 +24,7 @@ DECLARE_RESTRICTED_HOOK(android_rvh_cpu_capacity_show,
 #else
 
 #define trace_android_vh_arch_set_freq_scale(cpus, freq, max, scale)
-#define android_rvh_cpu_capacity_show(capacity, cpu)
+#define trace_android_rvh_cpu_capacity_show(capacity, cpu)
 
 #endif
 
