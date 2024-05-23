@@ -55,6 +55,10 @@
 
 #include <trace/events/migrate.h>
 
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/mm.h>
+#include <trace/hooks/vmscan.h>
+
 #include "internal.h"
 
 bool isolate_movable_page(struct page *page, isolate_mode_t mode)
@@ -176,6 +180,7 @@ void putback_movable_pages(struct list_head *l)
 		}
 	}
 }
+EXPORT_SYMBOL_GPL(putback_movable_pages);
 
 /*
  * Restore a potential migration pte to a working pte entry
@@ -581,6 +586,8 @@ void folio_migrate_flags(struct folio *newfolio, struct folio *folio)
 	 */
 	if (folio_test_mappedtodisk(folio))
 		folio_set_mappedtodisk(newfolio);
+
+	trace_android_vh_look_around_migrate_folio(folio, newfolio);
 
 	/* Move dirty on pages not done by folio_migrate_mapping() */
 	if (folio_test_dirty(folio))
@@ -1987,6 +1994,7 @@ out:
 
 	return rc_gather;
 }
+EXPORT_SYMBOL_GPL(migrate_pages);
 
 struct folio *alloc_migration_target(struct folio *src, unsigned long private)
 {
@@ -2522,6 +2530,14 @@ static int numamigrate_isolate_page(pg_data_t *pgdat, struct page *page)
 			if (managed_zone(pgdat->node_zones + z))
 				break;
 		}
+
+		/*
+		 * If there are no managed zones, it should not proceed
+		 * further.
+		 */
+		if (z < 0)
+			return 0;
+
 		wakeup_kswapd(pgdat->node_zones + z, 0, order, ZONE_MOVABLE);
 		return 0;
 	}

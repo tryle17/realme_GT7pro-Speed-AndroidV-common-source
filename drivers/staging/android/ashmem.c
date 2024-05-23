@@ -20,6 +20,7 @@
 #include <linux/mm.h>
 #include <linux/mman.h>
 #include <linux/uaccess.h>
+#include <linux/page_size_compat.h>
 #include <linux/personality.h>
 #include <linux/bitops.h>
 #include <linux/mutex.h>
@@ -390,7 +391,7 @@ static int ashmem_mmap(struct file *file, struct vm_area_struct *vma)
 	}
 
 	/* requested mapping size larger than object size */
-	if (vma->vm_end - vma->vm_start > PAGE_ALIGN(asma->size)) {
+	if (vma->vm_end - vma->vm_start > __PAGE_ALIGN(asma->size)) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -936,6 +937,15 @@ static const struct file_operations ashmem_fops = {
 	.show_fdinfo = ashmem_show_fdinfo,
 #endif
 };
+
+/*
+ * is_ashmem_file - Check if struct file* is associated with ashmem
+ */
+int is_ashmem_file(struct file *file)
+{
+	return file->f_op == &ashmem_fops;
+}
+EXPORT_SYMBOL_GPL(is_ashmem_file);
 
 static struct miscdevice ashmem_misc = {
 	.minor = MISC_DYNAMIC_MINOR,

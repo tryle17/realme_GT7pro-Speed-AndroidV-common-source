@@ -81,6 +81,11 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/tlb.h>
 #include <trace/events/migrate.h>
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/mm.h>
+
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/mm.h>
 
 #include "internal.h"
 
@@ -821,6 +826,7 @@ static bool folio_referenced_one(struct folio *folio,
 		}
 
 		if (pvmw.pte) {
+			trace_android_vh_look_around(&pvmw, folio, vma, &referenced);
 			if (lru_gen_enabled() &&
 			    pte_young(ptep_get(pvmw.pte))) {
 				lru_gen_look_around(&pvmw);
@@ -1768,6 +1774,7 @@ discard:
 	}
 
 	mmu_notifier_invalidate_range_end(&range);
+	trace_android_vh_try_to_unmap_one(folio, vma, address, arg, ret);
 
 	return ret;
 }
