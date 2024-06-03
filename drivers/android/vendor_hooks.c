@@ -28,6 +28,7 @@
 #include <trace/hooks/mmc.h>
 #include <trace/hooks/cgroup.h>
 #include <trace/hooks/sys.h>
+#include <trace/hooks/madvise.h>
 #include <trace/hooks/iommu.h>
 #include <trace/hooks/net.h>
 #include <trace/hooks/pm_domain.h>
@@ -145,6 +146,9 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_ufs_compl_command);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_cgroup_set_task);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_rvh_cgroup_force_kthread_migration);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_syscall_prctl_finished);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_anon_vma_name_recog);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_restore_mm_flags);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_update_vma_flags);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_ufs_send_uic_command);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_ufs_send_tm_command);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_ufs_check_int_errors);
@@ -187,6 +191,7 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_cleanup_old_buffers_bypass);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_drain_all_pages_bypass);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_slab_alloc_node);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_slab_free);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_page_referenced_check_bypass);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_rvh_selinux_avc_insert);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_rvh_selinux_avc_node_delete);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_rvh_selinux_avc_node_replace);
@@ -378,3 +383,10 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_alloc_uid);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_free_user);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_save_vmalloc_stack);
 EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_show_stack_hash);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_show_mapcount_pages);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_update_page_mapcount);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_add_page_to_lrulist);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_del_page_from_lrulist);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_do_traversal_lruvec);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_page_should_be_protected);
+EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_mark_page_accessed);

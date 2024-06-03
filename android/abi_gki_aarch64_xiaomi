@@ -62,6 +62,12 @@
   scsi_device_lookup
   scsi_host_lookup
   scsi_device_lookup
+  __traceiter_android_vh_anon_vma_name_recog
+  __traceiter_android_vh_restore_mm_flags
+  __traceiter_android_vh_update_vma_flags
+  __tracepoint_android_vh_anon_vma_name_recog
+  __tracepoint_android_vh_restore_mm_flags
+  __tracepoint_android_vh_update_vma_flags
 
 #required by metis.ko module
   __traceiter_android_vh_rwsem_read_wait_start
@@ -261,3 +267,17 @@
   nvmem_unregister
   blkdev_put
   blkdev_get_by_path
+  generic_shutdown_super
+  sget_dev
+  deactivate_locked_super
+  fixed_size_llseek
+  blk_mq_alloc_sq_tag_set
+  blk_queue_flag_clear
+  blk_mq_freeze_queue
+  blk_mq_unfreeze_queue
+  blk_update_request
+  __blk_mq_end_request
+  ktime_get_coarse_real_ts64
+  set_capacity
+  blk_queue_flag_clear
+  blk_mq_unfreeze_queue
