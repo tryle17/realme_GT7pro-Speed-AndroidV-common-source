@@ -140,12 +140,15 @@
   clk_hw_is_prepared
   clk_hw_register
   clk_hw_round_rate
+  clk_hw_set_rate_range
   clk_hw_unregister
   __clk_is_enabled
   __clk_mux_determine_rate_closest
   clk_prepare
   clk_put
+  clk_restore_context
   clk_round_rate
+  clk_save_context
   clk_set_parent
   clk_set_rate
   clk_sync_state
@@ -1163,6 +1166,7 @@
   of_clk_add_provider
   of_clk_del_provider
   of_clk_get_from_provider
+  of_clk_hw_onecell_get
   of_clk_hw_simple_get
   of_clk_src_simple_get
   of_count_phandle_with_args
