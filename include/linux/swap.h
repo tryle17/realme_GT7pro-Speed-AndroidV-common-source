@@ -29,9 +29,21 @@ struct pagevec;
 #define SWAP_FLAG_DISCARD_ONCE	0x20000 /* discard swap area at swapon-time */
 #define SWAP_FLAG_DISCARD_PAGES 0x40000 /* discard page-clusters after use */
 
+/* set if swap cluters reserve order and percent specified */
+#define SWAP_FLAG_MTHP_RESERVE			0x80000
+/* order to reserve: Orders [1, PMD_ORDER] are valid */
+#define SWAP_FLAG_MTHP_RESERVE_ORDER_MASK	0x00F00000
+#define SWAP_FLAG_MTHP_RESERVE_ORDER_SHIFT	20
+/* percentage of swap clusters to reserve; [1, 100] are valid */
+#define SWAP_FLAG_MTHP_RESERVE_PERCENT_MASK	0x7F000000
+#define SWAP_FLAG_MTHP_RESERVE_PERCENT_SHIFT	24
+
 #define SWAP_FLAGS_VALID	(SWAP_FLAG_PRIO_MASK | SWAP_FLAG_PREFER | \
 				 SWAP_FLAG_DISCARD | SWAP_FLAG_DISCARD_ONCE | \
-				 SWAP_FLAG_DISCARD_PAGES)
+				 SWAP_FLAG_DISCARD_PAGES | \
+				 SWAP_FLAG_MTHP_RESERVE | \
+				 SWAP_FLAG_MTHP_RESERVE_ORDER_MASK | \
+				 SWAP_FLAG_MTHP_RESERVE_PERCENT_MASK)
 #define SWAP_BATCH 64
 
 static inline int current_is_kswapd(void)
@@ -491,7 +503,7 @@ extern int add_swap_count_continuation(swp_entry_t, gfp_t);
 extern void swap_shmem_alloc(swp_entry_t);
 extern int swap_duplicate(swp_entry_t);
 extern int swapcache_prepare(swp_entry_t);
-extern void swap_free(swp_entry_t);
+extern void swap_free_nr(swp_entry_t entry, int nr_pages);
 extern void swapcache_free_entries(swp_entry_t *entries, int n);
 extern void free_swap_and_cache_nr(swp_entry_t entry, int nr);
 int swap_type_of(dev_t device, sector_t offset);
@@ -570,7 +582,7 @@ static inline int swapcache_prepare(swp_entry_t swp)
 	return 0;
 }
 
-static inline void swap_free(swp_entry_t swp)
+static inline void swap_free_nr(swp_entry_t entry, int nr_pages)
 {
 }
 
@@ -616,6 +628,11 @@ static inline int add_swap_extent(struct swap_info_struct *sis,
 static inline void free_swap_and_cache(swp_entry_t entry)
 {
 	free_swap_and_cache_nr(entry, 1);
+}
+
+static inline void swap_free(swp_entry_t entry)
+{
+	swap_free_nr(entry, 1);
 }
 
 #ifdef CONFIG_MEMCG
