@@ -68,6 +68,8 @@
   __traceiter_android_vh_free_task
   __traceiter_android_vh_fuse_request_end
   __traceiter_android_vh_irqtime_account_process_tick
+  __traceiter_android_vh_inode_lru_isolate
+  __traceiter_android_vh_invalidate_mapping_pagevec
   __traceiter_android_vh_look_around
   __traceiter_android_vh_look_around_migrate_folio
   __traceiter_android_vh_lock_folio_drop_mmap_end
@@ -82,6 +84,7 @@
   __traceiter_android_vh_percpu_rwsem_down_read
   __traceiter_android_vh_percpu_rwsem_up_write
   __traceiter_android_vh_percpu_rwsem_wq_add
+  __traceiter_android_rvh_pr_set_vma_name_bypass
   __traceiter_android_vh_queue_request_and_unlock
   __traceiter_android_vh_record_rwsem_reader_owned
   __traceiter_android_vh_record_rwsem_writer_owned
@@ -97,6 +100,7 @@
   __traceiter_android_vh_sd_init_unmap_multi_segment
   __traceiter_android_vh_sd_setup_unmap_multi_segment
   __traceiter_android_vh_shmem_swapin_folio
+  __traceiter_android_vh_shrink_folio_list
   __traceiter_android_vh_swapmem_gather_add_bypass
   __traceiter_android_vh_swapmem_gather_finish
   __traceiter_android_vh_swapmem_gather_init
@@ -163,6 +167,8 @@
   __tracepoint_android_vh_filemap_update_page
   __tracepoint_android_vh_free_task
   __tracepoint_android_vh_fuse_request_end
+  __tracepoint_android_vh_inode_lru_isolate
+  __tracepoint_android_vh_invalidate_mapping_pagevec
   __tracepoint_android_vh_irqtime_account_process_tick
   __tracepoint_android_vh_look_around
   __tracepoint_android_vh_look_around_migrate_folio
@@ -178,6 +184,7 @@
   __tracepoint_android_vh_percpu_rwsem_down_read
   __tracepoint_android_vh_percpu_rwsem_up_write
   __tracepoint_android_vh_percpu_rwsem_wq_add
+  __tracepoint_android_rvh_pr_set_vma_name_bypass
   __tracepoint_android_vh_queue_request_and_unlock
   __tracepoint_android_vh_record_rwsem_reader_owned
   __tracepoint_android_vh_record_rwsem_writer_owned
@@ -193,6 +200,7 @@
   __tracepoint_android_vh_sd_init_unmap_multi_segment
   __tracepoint_android_vh_sd_setup_unmap_multi_segment
   __tracepoint_android_vh_shmem_swapin_folio
+  __tracepoint_android_vh_shrink_folio_list
   __tracepoint_android_vh_swapmem_gather_add_bypass
   __tracepoint_android_vh_swapmem_gather_finish
   __tracepoint_android_vh_swapmem_gather_init
