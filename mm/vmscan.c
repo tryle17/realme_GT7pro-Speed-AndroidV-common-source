@@ -1750,8 +1750,6 @@ retry:
 		enum folio_references references = FOLIOREF_RECLAIM;
 		bool dirty, writeback;
 		unsigned int nr_pages;
-		bool activate = false;
-		bool keep = false;
 
 		cond_resched();
 
@@ -1785,15 +1783,6 @@ retry:
 		 * folios if the tail of the LRU is all dirty unqueued folios.
 		 */
 		folio_check_dirty_writeback(folio, &dirty, &writeback);
-
-		trace_android_vh_shrink_folio_list(folio, dirty, writeback,
-				&activate, &keep);
-		if (activate)
-			goto activate_locked;
-
-		if (keep)
-			goto keep_locked;
-
 		if (dirty || writeback)
 			stat->nr_dirty += nr_pages;
 
