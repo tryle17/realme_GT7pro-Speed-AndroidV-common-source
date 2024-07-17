@@ -1964,7 +1964,6 @@
   __traceiter_android_vh_scheduler_tick
   __traceiter_android_vh_show_resume_epoch_val
   __traceiter_android_vh_show_suspend_epoch_val
-  __traceiter_android_vh_thermal_pm_notify_suspend
   __traceiter_android_vh_timer_calc_index
   __traceiter_android_vh_try_fixup_sea
   __traceiter_android_vh_try_to_unmap_one
@@ -2061,7 +2060,6 @@
   __tracepoint_android_vh_scheduler_tick
   __tracepoint_android_vh_show_resume_epoch_val
   __tracepoint_android_vh_show_suspend_epoch_val
-  __tracepoint_android_vh_thermal_pm_notify_suspend
   __tracepoint_android_vh_timer_calc_index
   __tracepoint_android_vh_try_fixup_sea
   __tracepoint_android_vh_try_to_unmap_one
