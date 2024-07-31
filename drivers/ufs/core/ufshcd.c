@@ -1273,7 +1273,7 @@ static int ufshcd_clock_scaling_prepare(struct ufs_hba *hba, u64 timeout_us)
 	 * make sure that there are no outstanding requests when
 	 * clock scaling is in progress
 	 */
-	blk_mq_quiesce_tagset(&hba->host->tag_set);
+	ufshcd_scsi_block_requests(hba);
 	mutex_lock(&hba->wb_mutex);
 	down_write(&hba->clk_scaling_lock);
 
@@ -1282,7 +1282,7 @@ static int ufshcd_clock_scaling_prepare(struct ufs_hba *hba, u64 timeout_us)
 		ret = -EBUSY;
 		up_write(&hba->clk_scaling_lock);
 		mutex_unlock(&hba->wb_mutex);
-		blk_mq_unquiesce_tagset(&hba->host->tag_set);
+		ufshcd_scsi_unblock_requests(hba);
 		goto out;
 	}
 
@@ -1303,7 +1303,7 @@ static void ufshcd_clock_scaling_unprepare(struct ufs_hba *hba, int err, bool sc
 
 	mutex_unlock(&hba->wb_mutex);
 
-	blk_mq_unquiesce_tagset(&hba->host->tag_set);
+	ufshcd_scsi_unblock_requests(hba);
 	ufshcd_release(hba);
 }
 
